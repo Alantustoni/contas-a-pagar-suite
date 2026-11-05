@@ -10,7 +10,8 @@ import queue
 import re
 import threading
 import tkinter as tk
-from typing import Any, Callable, List, Optional, Sequence
+from tkinter import ttk
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 import customtkinter as ctk
 
@@ -102,19 +103,22 @@ class MetricCard(Card):
         # card aparece com um vão vazio embaixo do número.
         kw.setdefault("height", 104)
         super().__init__(master, **kw)
-        # cor do filete: acompanha o estado do indicador (accent por padrão)
-        cor_filete = T.AZUL if cor_valor in (T.INK, T.AZUL_ESCURO) else cor_valor
-        self._filete = ctk.CTkFrame(self, width=T.FILETE_W, fg_color=cor_filete,
-                                    corner_radius=2)
-        self._filete.pack(side="left", fill="y", padx=(6, 0), pady=8)
+        # tema grafite: bolinha colorida ao lado do rótulo (cor do indicador)
+        # e o número em grafite
+        cor_ponto = T.AZUL if cor_valor in (T.INK, T.AZUL_ESCURO) else cor_valor
 
         corpo = ctk.CTkFrame(self, fg_color="transparent")
-        corpo.pack(side="left", fill="both", expand=True)
-        self._rotulo = ctk.CTkLabel(corpo, text=rotulo.upper(), font=T.F_CARD_LABEL,
+        corpo.pack(side="left", fill="both", expand=True, padx=(6, 0))
+        linha = ctk.CTkFrame(corpo, fg_color="transparent")
+        linha.pack(fill="x", padx=12, pady=(12, 0))
+        self._filete = ctk.CTkFrame(linha, width=8, height=8, corner_radius=4,
+                                    fg_color=cor_ponto)
+        self._filete.pack(side="left", padx=(0, 8))
+        self._rotulo = ctk.CTkLabel(linha, text=rotulo.upper(), font=T.F_CARD_LABEL,
                                     text_color=T.INK_2, anchor="w")
-        self._rotulo.pack(fill="x", padx=12, pady=(12, 0))
+        self._rotulo.pack(side="left", fill="x")
         self._valor = ctk.CTkLabel(corpo, text="—", font=T.F_CARD_VALOR,
-                                   text_color=cor_valor, anchor="w")
+                                   text_color=T.INK, anchor="w")
         self._valor.pack(fill="x", padx=12)
         self._sub = ctk.CTkLabel(corpo, text="", font=T.F_PEQUENA,
                                  text_color=T.INK_3, anchor="w")
@@ -173,6 +177,34 @@ class StepBar(ctk.CTkFrame):
 _RE_NUM = re.compile(r"[^\d,.-]")
 
 
+_ALTURA_LINHA = 26          # px por linha da tabela (Treeview)
+_ESTILO_PRONTO = False
+
+
+def _estilo_tabela(widget: tk.Misc) -> None:
+    """Estilo único do Treeview: cabeçalho azul-assinatura, zebra, Segoe UI."""
+    global _ESTILO_PRONTO
+    if _ESTILO_PRONTO:
+        return
+    st = ttk.Style(widget)
+    try:
+        st.theme_use("clam")       # o tema "clam" respeita cores customizadas
+    except tk.TclError:
+        pass
+    st.configure("Alan.Treeview", background=T.CARD, fieldbackground=T.CARD,
+                 foreground=T.INK, rowheight=_ALTURA_LINHA, borderwidth=0,
+                 font=(T.FONTE, 10))
+    st.configure("Alan.Treeview.Heading", background=T.AZUL_ESCURO,
+                 foreground=T.BRANCO, font=(T.FONTE, 9, "bold"),
+                 relief="flat", padding=(8, 6), borderwidth=0)
+    st.map("Alan.Treeview.Heading",
+           background=[("active", T.AZUL)], foreground=[("active", T.BRANCO)])
+    st.map("Alan.Treeview", background=[("selected", T.INFO_BG)],
+           foreground=[("selected", T.AZUL_ESCURO)])
+    st.layout("Alan.Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+    _ESTILO_PRONTO = True
+
+
 def _chave_ordenacao(valor: Any):
     """Ordena numérico quando dá (R$ 1.234,56 → 1234.56); senão texto."""
     s = str(valor).strip()
@@ -212,10 +244,10 @@ class Tabela(ctk.CTkFrame):
                 len(self._colunas) - len(self._alinhamentos))
         self._nome_export = nome_export
         self._dados: List[List[Any]] = []      # dataset completo
+        self._tags: List[str] = []             # situação de cada linha ("" = zebra)
+        self._filtro_tags: Optional[set] = None
         self._ordem_col: Optional[int] = None
         self._ordem_desc = False
-        self._linhas: List[List[ctk.CTkLabel]] = []
-        self._headers: List[ctk.CTkLabel] = []
 
         # ── toolbar (busca + contador + exportar) ────────────────────
         if busca or exportar:
@@ -227,7 +259,7 @@ class Tabela(ctk.CTkFrame):
                     width=240, font=T.F_PEQUENA, border_color=T.BORDA,
                     fg_color=T.CARD)
                 self._entry.pack(side="left")
-                self._entry.bind("<KeyRelease>", lambda _e: self._render())
+                self._entry.bind("<KeyRelease>", lambda _e: self._agendar_render())
             self._lbl_cont = ctk.CTkLabel(bar, text="", font=T.F_PEQUENA,
                                           text_color=T.INK_3)
             self._lbl_cont.pack(side="left", padx=10)
@@ -238,37 +270,83 @@ class Tabela(ctk.CTkFrame):
             self._entry = None
             self._lbl_cont = None
 
-        # ── grade rolável ────────────────────────────────────────────
-        self._grid = ctk.CTkScrollableFrame(self, height=altura,
-                                            fg_color=T.CARD,
-                                            corner_radius=T.RAIO)
-        self._grid.pack(fill="both", expand=True)
+        # ── grade: ttk.Treeview nativo ───────────────────────────────
+        # Antes cada célula era um CTkLabel (400 linhas × 7 colunas = 2.800
+        # widgets) destruído e recriado a cada tecla da busca → tremia e
+        # travava. O Treeview desenha milhares de linhas sem recriar nada.
+        _estilo_tabela(self)
+        moldura = ctk.CTkFrame(self, fg_color=T.CARD, corner_radius=T.RAIO,
+                               border_width=1, border_color=T.BORDA)
+        moldura.pack(fill="both", expand=True)
+        linhas_visiveis = max(3, int(altura // _ALTURA_LINHA))
+        self._tree = ttk.Treeview(
+            moldura, columns=[str(i) for i in range(len(self._colunas))],
+            show="headings", height=linhas_visiveis, style="Alan.Treeview",
+            selectmode="extended")
+        sb = ctk.CTkScrollbar(moldura, command=self._tree.yview,
+                              button_color=T.BORDA, button_hover_color=T.AZUL_CLARO)
+        self._tree.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y", padx=(0, 4), pady=6)
+        self._tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
         for c, (nome, w) in enumerate(zip(self._colunas, self._larguras)):
-            # weight proporcional à largura → colunas respeitam as proporções
-            # pedidas (antes era weight=1 uniforme, o que desalinhava tudo).
-            self._grid.grid_columnconfigure(c, minsize=w, weight=max(1, int(w)))
-            raio = T.RAIO_BTN if c in (0, len(self._colunas) - 1) else 0
-            h = ctk.CTkLabel(self._grid, text=nome.upper(),
-                             font=(T.FONTE, 11, "bold"), text_color=T.BRANCO,
-                             fg_color=T.AZUL_ESCURO, corner_radius=raio,
-                             anchor=self._alinhamentos[c])
-            h.grid(row=0, column=c, sticky="nsew", padx=(0, 1), pady=(0, 3),
-                   ipadx=8, ipady=5)
-            h.bind("<Button-1>", lambda _e, col=c: self._ordenar(col))
-            h.configure(cursor="hand2")
-            self._headers.append(h)
+            anc = "e" if self._alinhamentos[c] == "e" else "w"
+            self._tree.heading(str(c), text=nome.upper(), anchor=anc,
+                               command=lambda col=c: self._ordenar(col))
+            self._tree.column(str(c), width=int(w), minwidth=40, anchor=anc,
+                              stretch=True)
+        self._tree.tag_configure("par", background=T.ZEBRA)
+        self._tree.tag_configure("impar", background=T.CARD)
+        # rolagem da roda do mouse fica na tabela (não arrasta a página junto)
+        self._tree.bind("<MouseWheel>", self._rolar)
+        self._busca_pendente: Optional[str] = None
+
+    def _rolar(self, ev) -> str:
+        self._tree.yview_scroll(int(-ev.delta / 120) * 3, "units")
+        return "break"
 
     # ------------------------------------------------------------------ #
     def limpar(self) -> None:
-        for linha in self._linhas:
-            for w in linha:
-                w.destroy()
-        self._linhas.clear()
+        self._tree.delete(*self._tree.get_children())
+
+    def selecionadas(self) -> List[List[str]]:
+        """Valores (texto) das linhas selecionadas pelo usuário."""
+        return [[str(v) for v in self._tree.item(i, "values")] for i in self._tree.selection()]
 
     def preencher(self, linhas: Sequence[Sequence[Any]],
-                  max_linhas: int = 2000) -> None:
+                  max_linhas: int = 2000,
+                  tags: Optional[Sequence[str]] = None) -> None:
+        """`tags` (opcional): uma por linha — pinta a linha inteira com a cor
+        registrada em cor_tag() e permite filtrar com filtrar_tags()."""
         self._dados = [list(l) for l in linhas][:max_linhas]
+        t = list(tags or [])[:len(self._dados)]
+        self._tags = t + [""] * (len(self._dados) - len(t))
         self._render()
+
+    def cor_tag(self, nome: str, fundo: Optional[str] = None,
+                texto: Optional[str] = None) -> None:
+        opts = {}
+        if fundo:
+            opts["background"] = fundo
+        if texto:
+            opts["foreground"] = texto
+        self._tree.tag_configure(nome, **opts)
+
+    def filtrar_tags(self, tags: Optional[Iterable[str]]) -> None:
+        """None = todas as linhas; senão só as linhas com essas tags."""
+        self._filtro_tags = set(tags) if tags is not None else None
+        self._render()
+
+    def contar_tags(self) -> Dict[str, int]:
+        cont: Dict[str, int] = {}
+        for t in self._tags:
+            cont[t] = cont.get(t, 0) + 1
+        return cont
+
+    def _agendar_render(self) -> None:
+        # debounce: espera a pessoa parar de digitar (150 ms) antes de filtrar
+        if self._busca_pendente is not None:
+            self.after_cancel(self._busca_pendente)
+        self._busca_pendente = self.after(150, self._render)
 
     # ------------------------------------------------------------------ #
     def _ordenar(self, col: int) -> None:
@@ -276,45 +354,41 @@ class Tabela(ctk.CTkFrame):
             self._ordem_desc = not self._ordem_desc
         else:
             self._ordem_col, self._ordem_desc = col, False
-        # seta no cabeçalho
-        for c, h in enumerate(self._headers):
-            base = self._colunas[c].upper()
-            if c == col:
-                h.configure(text=f"{base}  {'▼' if self._ordem_desc else '▲'}")
-            else:
-                h.configure(text=base)
+        for c, nome in enumerate(self._colunas):
+            seta = f"  {'▼' if self._ordem_desc else '▲'}" if c == col else ""
+            self._tree.heading(str(c), text=nome.upper() + seta)
         self._render()
 
-    def _filtradas(self) -> List[List[Any]]:
-        linhas = self._dados
+    def _filtradas_idx(self) -> List[int]:
+        idx = list(range(len(self._dados)))
+        if self._filtro_tags is not None:
+            idx = [i for i in idx if self._tags[i] in self._filtro_tags]
         if self._entry is not None:
             termo = self._entry.get().strip().lower()
             if termo:
-                linhas = [l for l in linhas
-                          if any(termo in str(v).lower() for v in l)]
+                idx = [i for i in idx
+                       if any(termo in str(v).lower() for v in self._dados[i])]
         if self._ordem_col is not None:
-            linhas = sorted(
-                linhas,
-                key=lambda l: _chave_ordenacao(
-                    l[self._ordem_col] if self._ordem_col < len(l) else ""),
+            col = self._ordem_col
+            idx.sort(key=lambda i: _chave_ordenacao(
+                self._dados[i][col] if col < len(self._dados[i]) else ""),
                 reverse=self._ordem_desc)
-        return linhas
+        return idx
 
-    def _render(self, max_visiveis: int = 400) -> None:
+    def _filtradas(self) -> List[List[Any]]:
+        return [self._dados[i] for i in self._filtradas_idx()]
+
+    def _render(self, max_visiveis: int = 2000) -> None:
+        self._busca_pendente = None
         self.limpar()
-        linhas = self._filtradas()
-        for r, linha in enumerate(linhas[:max_visiveis], start=1):
-            bg = T.ZEBRA if r % 2 == 0 else T.CARD
-            widgets = []
-            for c, valor in enumerate(linha):
-                anc = self._alinhamentos[c] if c < len(self._alinhamentos) else "w"
-                lbl = ctk.CTkLabel(self._grid, text=str(valor),
-                                   font=T.F_PEQUENA, text_color=T.INK,
-                                   fg_color=bg, anchor=anc)
-                lbl.grid(row=r, column=c, sticky="nsew", padx=(0, 1),
-                         ipadx=8, ipady=3)
-                widgets.append(lbl)
-            self._linhas.append(widgets)
+        idx = self._filtradas_idx()
+        linhas = idx                      # só p/ o contador abaixo
+        n_col = len(self._colunas)
+        for r, i in enumerate(idx[:max_visiveis]):
+            valores = [str(v) for v in self._dados[i][:n_col]]
+            valores += [""] * (n_col - len(valores))
+            tag = self._tags[i] or ("par" if r % 2 else "impar")
+            self._tree.insert("", "end", values=valores, tags=(tag,))
         if self._lbl_cont is not None:
             total = len(self._dados)
             vis = len(linhas)
@@ -423,25 +497,21 @@ def cabecalho(master, titulo: str, subtitulo: str,
     O label do título fica em `band._titulo_label` (o dashboard usa para
     atualizar a saudação conforme o horário).
     """
-    band = ctk.CTkFrame(master, fg_color=T.AZUL_ESCURO, corner_radius=T.RAIO)
-    inner = ctk.CTkFrame(band, fg_color="transparent")
-    inner.pack(fill="x", padx=20, pady=16)
-
-    if icone:
-        ctk.CTkLabel(inner, text=icone, font=(T.FONTE, 30),
-                     text_color=T.BRANCO).pack(side="left", padx=(0, 16))
-
-    txt = ctk.CTkFrame(inner, fg_color="transparent")
-    txt.pack(side="left", fill="x", expand=True)
+    # Tema "Grafite e verde" (30/10/2026): sem faixa colorida — breadcrumb
+    # discreto, título forte e subtítulo sobre o próprio fundo da tela.
+    # (o ícone deixou de ser exibido; o parâmetro fica por compatibilidade)
+    band = ctk.CTkFrame(master, fg_color="transparent")
+    txt = ctk.CTkFrame(band, fg_color="transparent")
+    txt.pack(side="left", fill="x", expand=True, padx=4, pady=(0, 2))
     if crumb:
         ctk.CTkLabel(txt, text=crumb.upper(), font=T.F_CRUMB,
-                     text_color=T.SIDEBAR_ITEM, anchor="w").pack(fill="x")
+                     text_color=T.INK_3, anchor="w", height=16).pack(fill="x")
     lbl = ctk.CTkLabel(txt, text=titulo, font=T.F_TITULO,
-                       text_color=T.BRANCO, anchor="w")
+                       text_color=T.INK, anchor="w")
     lbl.pack(fill="x")
     ctk.CTkLabel(txt, text=subtitulo, font=T.F_SUBTITULO,
-                 text_color=T.SIDEBAR_ITEM, anchor="w",
-                 justify="left").pack(fill="x")
+                 text_color=T.INK_2, anchor="w", justify="left",
+                 wraplength=900).pack(fill="x")
     band._titulo_label = lbl
     return band
 

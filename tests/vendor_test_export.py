@@ -91,17 +91,19 @@ def test_negrito_mg():
     assert not ws.cell(row=lin_matriz, column=5).font.bold, "MATRIZ nao deveria ser negrito"
 
 
-def test_pagamento_sem_nota_no_relatorio():
+def test_pagamento_sem_nota_fora_do_relatorio():
+    # [ALAN 30/10/2026] seção tirada da aba ERROS a pedido do usuário
     wb, _ = _gerar()
     vals = _valores(wb["ERROS"])
-    assert any("SEM NOTA" in v.upper() for v in vals), "faltou secao de pagamentos sem nota"
-    assert "FORNECEDOR ORFAO" in vals, "pagamento orfao nao foi listado"
+    assert not any("SEM NOTA" in v.upper() for v in vals)
+    assert "FORNECEDOR ORFAO" not in vals
 
 
-def test_conciliacao_ok_no_relatorio():
+def test_conciliacao_ok_nao_aparece_no_relatorio():
+    # [ALAN 29/10/2026] "conciliação OK" saiu; só aparece quando NÃO fecha
     wb, _ = _gerar()
     vals = _valores(wb["ERROS"])
-    assert any("CONCILIA" in v.upper() for v in vals), "faltou secao de conciliacao"
+    assert not any("CONCILIAÇÃO OK" in v.upper() for v in vals)
 
 
 def _montar_arquivo_revisado(caminho):
@@ -149,7 +151,7 @@ def test_consolidado_negrito_mg():
     assert "ALFAMETAL - BTV" in wb.sheetnames
     ws = wb["ALFAMETAL - BTV"]
     achou_mg = achou_matriz = False
-    for row in ws.iter_rows(min_col=6, max_col=6):   # coluna F = EMPRESA
+    for row in ws.iter_rows(min_col=4, max_col=4):   # coluna D = EMPRESA
         cell = row[0]
         val = str(cell.value or "").upper()
         if val == "ALFAMETAL MG":

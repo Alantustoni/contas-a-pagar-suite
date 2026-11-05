@@ -8,9 +8,11 @@ Layout das abas de entrada (geradas pelo sistema):
   Dados começam na coluna 5 (E), terminam na 10 (J)
   Sem STATUS nas abas de entrada
 
-Layout da aba ALFAMETAL - BTV gerada (modelo aprovado):
-  Colunas F:K — EMPRESA | STATUS | FORNECEDOR | PRV NF | VENC | VALOR
-  Sem CNPJ, STATUS vazio para preenchimento manual
+Layout da aba ALFAMETAL - BTV gerada (modelo aprovado em 30/10/2026,
+igual ao exemplo Pasta1.xlsx do usuário):
+  Colunas D:I — EMPRESA | CNPJ | FORNECEDOR | PRV NF | VENC | VALOR
+  Para cada dia: título do dia (uma vez), bloco ALFAMETAL e depois bloco
+  BETAVIARIA (cabeçalho preto, letra branca), cada um com TOTAL.
 """
 from __future__ import annotations
 
@@ -22,12 +24,12 @@ from pathlib import Path
 
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Font, PatternFill
 
 from .excel_styles import (
     ALIGN_CENTER, ALIGN_RIGHT, ALIGN_VCENTER,
     BORDER_THIN,
-    FILL_AMARELO, FILL_AZUL, FILL_BRANCO,
+    FILL_LARANJA,
     FONT_BLACK_BOLD, FONT_RED_BOLD_24, FONT_WHITE_BOLD,
 )
 
@@ -35,17 +37,18 @@ logger = logging.getLogger(__name__)
 
 _DIAS_SEMANA = {0: "SEGUNDA", 1: "TERÇA", 2: "QUARTA", 3: "QUINTA", 4: "SEXTA"}
 
-# Layout de SAÍDA (aba ALFAMETAL - BTV) — sem CNPJ, começa na coluna F
-_OUT_EMPRESA    = 6   # F
-_OUT_STATUS     = 7   # G
-_OUT_FORNECEDOR = 8   # H
-_OUT_PRV_NF     = 9   # I
-_OUT_VENC       = 10  # J
-_OUT_VALOR      = 11  # K
-_OUT_FIM        = 11
+# Layout de SAÍDA (aba ALFAMETAL - BTV) — colunas D:I, com CNPJ
+_OUT_EMPRESA    = 4   # D
+_OUT_CNPJ       = 5   # E
+_OUT_FORNECEDOR = 6   # F
+_OUT_PRV_NF     = 7   # G
+_OUT_VENC       = 8   # H
+_OUT_VALOR      = 9   # I
+_OUT_FIM        = 9
 
-_LARGURAS = {"F": 22, "G": 10, "H": 36, "I": 16, "J": 13, "K": 14}
-_HEADERS  = ["EMPRESA", "STATUS", "FORNECEDOR", "PRV NF", "VENC", "VALOR"]
+_LARGURAS = {"D": 21, "E": 19, "F": 32, "G": 13, "H": 11, "I": 13}
+_FILL_PRETO = PatternFill("solid", fgColor="000000")
+_HEADERS  = ["EMPRESA", "CNPJ", "FORNECEDOR", "PRV NF", "VENC", "VALOR"]
 
 # Palavras que indicam linha não-dados nas abas de entrada
 _IGNORAR = {"EMPRESA", "TOTAL", "TOTAL:", ""}
@@ -136,6 +139,7 @@ def _ler_aba_revisada(ws) -> pd.DataFrame:
 
         linhas.append({
             "EMPRESA":    empresa_str,
+            "CNPJ":       str(cnpj).strip() if cnpj else "",
             "FORNECEDOR": str(fornecedor).strip() if fornecedor else "",
             "PRV NF":     str(prv_nf).strip()     if prv_nf     else "",
             "VENC":       venc_ts,
@@ -143,7 +147,7 @@ def _ler_aba_revisada(ws) -> pd.DataFrame:
         })
 
     return pd.DataFrame(linhas) if linhas else pd.DataFrame(
-        columns=["EMPRESA", "FORNECEDOR", "PRV NF", "VENC", "VALOR"]
+        columns=["EMPRESA", "CNPJ", "FORNECEDOR", "PRV NF", "VENC", "VALOR"]
     )
 
 
@@ -155,7 +159,7 @@ def _estilizar_bloco(ws, linha_inicio: int, linha_fim: int) -> None:
         for cell in row:
             cell.border    = BORDER_THIN
             cell.alignment = ALIGN_VCENTER
-        # VENC = índice 4 no tuple (F=0,G=1,H=2,I=3,J=4,K=5)
+        # VENC = índice 4 no tuple (D=0,E=1,F=2,G=3,H=4,I=5)
         if len(row) > 4 and row[4].value is not None:
             row[4].number_format = "DD/MM/YYYY"
             row[4].alignment     = ALIGN_CENTER
@@ -165,7 +169,7 @@ def _estilizar_bloco(ws, linha_inicio: int, linha_fim: int) -> None:
             row[5].alignment     = ALIGN_RIGHT
 
 
-def _gerar_aba_consolidada(ws, df: pd.DataFrame) -> None:
+def _gerar_aba_tng(ws, df: pd.DataFrame) -> None:
     """Escreve aba ALFAMETAL - BTV conforme layout aprovado."""
     ws.sheet_view.showGridLines = True
 
@@ -192,30 +196,34 @@ def _gerar_aba_consolidada(ws, df: pd.DataFrame) -> None:
         nome_dia = _DIAS_SEMANA.get(data.weekday(), "")
         titulo   = f"{nome_dia} - {data.strftime('%d/%m')}"
 
-        # Título do dia
-        ws.merge_cells(
-            start_row=linha, start_column=_OUT_EMPRESA,
-            end_row=linha,   end_column=_OUT_FIM,
-        )
-        cel           = ws.cell(row=linha, column=_OUT_EMPRESA, value=titulo)
-        cel.font      = FONT_RED_BOLD_24
-        cel.alignment = ALIGN_CENTER
-        ws.row_dimensions[linha].height = 34
-        linha += 1
-
         mask_data = df["VENC"].dt.date == data.date()
+        titulo_feito = False
 
         dados_alfametal  = df[df["EMPRESA"].isin(alfametal_empresas)  & mask_data] \
             .sort_values(["VALOR", "FORNECEDOR"], ascending=[True, True], na_position="last")
         dados_betaviaria = df[df["EMPRESA"].isin(betaviaria_empresas) & mask_data] \
             .sort_values(["VALOR", "FORNECEDOR"], ascending=[True, True], na_position="last")
 
+        # [ALAN 30/10/2026] cabeçalho preto com letra branca nos dois blocos
         for grupo_df, fill_h, font_h in [
-            (dados_alfametal,  FILL_AZUL,   FONT_WHITE_BOLD),
-            (dados_betaviaria, FILL_AMARELO, FONT_BLACK_BOLD),
+            (dados_alfametal,  _FILL_PRETO, FONT_WHITE_BOLD),
+            (dados_betaviaria, _FILL_PRETO, FONT_WHITE_BOLD),
         ]:
             if grupo_df.empty:
                 continue
+
+            # Título do dia — só uma vez, antes do primeiro bloco do dia
+            if not titulo_feito:
+                ws.merge_cells(
+                    start_row=linha, start_column=_OUT_EMPRESA,
+                    end_row=linha,   end_column=_OUT_FIM,
+                )
+                cel           = ws.cell(row=linha, column=_OUT_EMPRESA, value=titulo)
+                cel.font      = FONT_RED_BOLD_24
+                cel.alignment = ALIGN_CENTER
+                ws.row_dimensions[linha].height = 32.25
+                linha += 1
+                titulo_feito = True
 
             # Cabeçalho
             for col_idx, header in enumerate(_HEADERS, start=_OUT_EMPRESA):
@@ -226,7 +234,7 @@ def _gerar_aba_consolidada(ws, df: pd.DataFrame) -> None:
                 c.border    = BORDER_THIN
             linha += 1
 
-            # Dados — sem CNPJ, STATUS vazio
+            # Dados
             inicio_dados = linha
             for _, r in grupo_df.iterrows():
                 venc_val  = r["VENC"].date() if pd.notna(r["VENC"]) else None
@@ -234,7 +242,7 @@ def _gerar_aba_consolidada(ws, df: pd.DataFrame) -> None:
 
                 cells = [
                     ws.cell(row=linha, column=_OUT_EMPRESA,    value=r["EMPRESA"]),
-                    ws.cell(row=linha, column=_OUT_STATUS,     value=""),        # STATUS vazio
+                    ws.cell(row=linha, column=_OUT_CNPJ,       value=r.get("CNPJ", "")),
                     ws.cell(row=linha, column=_OUT_FORNECEDOR, value=r["FORNECEDOR"]),
                     ws.cell(row=linha, column=_OUT_PRV_NF,     value=r["PRV NF"]),
                     ws.cell(row=linha, column=_OUT_VENC,       value=venc_val),
@@ -249,9 +257,17 @@ def _gerar_aba_consolidada(ws, df: pd.DataFrame) -> None:
             if linha > inicio_dados:
                 _estilizar_bloco(ws, inicio_dados, linha - 1)
 
-            linha += 1  # Espaço entre grupos
-
-        linha += 1  # Espaço entre dias
+            # TOTAL do bloco — fórmula, recalcula se apagar linha na revisão
+            c_rot = ws.cell(row=linha, column=_OUT_VENC, value="TOTAL")
+            c_tot = ws.cell(row=linha, column=_OUT_VALOR,
+                            value=f"=SUM(I{inicio_dados}:I{linha - 1})")
+            for c in (c_rot, c_tot):
+                c.font      = FONT_BLACK_BOLD
+                c.fill      = FILL_LARANJA
+                c.border    = BORDER_THIN
+                c.alignment = ALIGN_RIGHT
+            c_tot.number_format = "#,##0.00"
+            linha += 2  # TOTAL + 1 linha em branco antes do próximo bloco
 
 
 def consolidar_arquivo(caminho_revisado: Path,
@@ -293,18 +309,18 @@ def consolidar_arquivo(caminho_revisado: Path,
         raise ValueError("Nenhum dado encontrado. Verifique se o arquivo foi revisado corretamente.")
 
     # Remove aba BTV anterior se já existir (re-geração)
-    aba_consol = "ALFAMETAL - BTV"
-    if aba_consol in wb.sheetnames:
-        del wb[aba_consol]
+    aba_tng = "ALFAMETAL - BTV"
+    if aba_tng in wb.sheetnames:
+        del wb[aba_tng]
 
     # Inserir antes de ERROS para manter ordem das abas
     idx = next(
         (i for i, n in enumerate(wb.sheetnames) if "ERRO" in n.upper()),
         len(wb.sheetnames),
     )
-    ws_consol = wb.create_sheet(aba_consol, index=idx)
+    ws_tng = wb.create_sheet(aba_tng, index=idx)
 
-    _gerar_aba_consolidada(ws_consol, df_total)
+    _gerar_aba_tng(ws_tng, df_total)
 
     # Escrita atômica no arquivo NOVO — não toca no revisado (que pode estar
     # aberto no Excel). O .tmp fica na pasta do destino para o os.replace ser

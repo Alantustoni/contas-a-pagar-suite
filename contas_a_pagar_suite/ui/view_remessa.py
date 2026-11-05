@@ -36,6 +36,18 @@ from ui.widgets import (FileDropZone, PremiumButton,             # noqa: E402
 from ui.dashboard import DayStatusGrid, MetricsDashboard         # noqa: E402
 from ui.attention_table import AttentionTable                    # noqa: E402
 
+# Tema "Grafite e verde" (30/10/2026): a tela original lê as cores deste
+# dicionário na hora de montar os widgets — trocamos só as cores, não a lógica.
+from ..core import theme as _T                                   # noqa: E402
+COLORS.update({
+    "bg_main": _T.FUNDO, "bg_card": _T.CARD, "bg_topbar": _T.TRACK,
+    "bg_hover": _T.INFO_BG, "bg_subtle": _T.ZEBRA, "bg_row_alt": _T.ZEBRA,
+    "blue_main": _T.AZUL_ESCURO, "blue_sec": _T.AZUL, "blue_light": _T.SIDEBAR_ITEM,
+    "blue_deep": _T.AZUL_ESCURO, "border": _T.BORDA, "border_hover": _T.AZUL,
+    "text_main": _T.INK, "text_sec": _T.INK_2, "text_light": _T.INK_3,
+    "text_muted": _T.INK_3,
+})
+
 
 class RemessaView(ctk.CTkFrame):
     """A tela original do REMESSA × BANCO, dentro da central."""
@@ -132,7 +144,7 @@ class RemessaView(ctk.CTkFrame):
 
         PremiumButton(
             bf, text="↺  Limpar", command=self._clear,
-            fg_color="#64748B", hover_color="#475569", width=120,
+            fg_color="#57534E", hover_color="#44403C", width=120,
         ).grid(row=0, column=2, padx=(8, 0))
         return r
 

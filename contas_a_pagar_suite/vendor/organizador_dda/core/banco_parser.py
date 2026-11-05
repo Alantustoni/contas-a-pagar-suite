@@ -185,7 +185,7 @@ def detectar_empresa_arquivo(path: Path) -> str:
 
 
 def parse_banco(path: Path, termos_siderurgicos=None,
-                cnpjs_excluidos=None) -> List[PagamentoBanco]:
+                cnpjs_excluidos=None, manter_termos=None) -> List[PagamentoBanco]:
     """
     Lê uma planilha ConsultaPagamentos do banco.
     Aceita .xls (converte via LibreOffice) e .xlsx.
@@ -201,6 +201,11 @@ def parse_banco(path: Path, termos_siderurgicos=None,
         if termos_siderurgicos is not None
         else _TERMOS_SIDERURGICOS
     )
+    # [ALAN 29/10/2026] favorecidos que ficam mesmo batendo nos termos de
+    # usina (ex.: SOLUÇÕES EM AÇO USIMINAS) — senão nunca casariam no banco
+    _manter = [_norm_termo(t) for t in (manter_termos or []) if _norm_termo(t)]
+    regex_manter = (re.compile("|".join(re.escape(t) for t in _manter), re.IGNORECASE)
+                    if _manter else None)
     raizes_excluidas = set()
     for c in (cnpjs_excluidos or []):
         dig = re.sub(r"\D", "", str(c))
@@ -258,7 +263,8 @@ def parse_banco(path: Path, termos_siderurgicos=None,
                 dig_fav = re.sub(r"\D", "", cnpj_fav_pre)
                 if len(dig_fav) >= 8 and dig_fav[:8] in raizes_excluidas:
                     continue
-            if regex_sider.search(fav):
+            if regex_sider.search(fav) and not (
+                    regex_manter and regex_manter.search(_norm_termo(fav))):
                 continue
 
             data_val  = _parse_data(str(row.iloc[i_data]).strip()  if i_data  is not None else "")

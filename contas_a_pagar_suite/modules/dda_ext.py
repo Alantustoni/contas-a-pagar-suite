@@ -23,6 +23,7 @@ O que acrescenta ao motor original:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Dict, List, Tuple
 
 import pandas as pd
@@ -148,13 +149,25 @@ GRUPOS_USINAS_DEFAULT: Dict[str, List[str]] = {
 class DataProcessorExt(DataProcessor):
     """DataProcessor do DDA V7 + cabeçalho opcional + captura de removidas."""
 
-    def __init__(self, config, grupos_usinas: Dict[str, List[str]] | None = None):
+    def __init__(self, config, grupos_usinas: Dict[str, List[str]] | None = None,
+                 manter_termos: List[str] | None = None):
         super().__init__(config)
         self.grupos_usinas = grupos_usinas or GRUPOS_USINAS_DEFAULT
+        self.manter_termos = list(manter_termos or [])
         self.df_propostas: pd.DataFrame = pd.DataFrame()
         self.df_usinas: pd.DataFrame = pd.DataFrame()
         self.totais_usinas: Dict[str, float] = {}
         self.usou_mapa_posicional: bool = False
+
+    # ------------------------------------------------------------------ #
+    def processar(self, arquivo):
+        """Motor original + limpeza da NF 'número-número' (Gamma Gasotec)."""
+        from .dda_compras import limpar_nf
+        result = super().processar(arquivo)
+        for df in (result.df, getattr(result, "duplicatas", None), self.df_propostas):
+            if df is not None and not df.empty and "PRV NF" in df.columns:
+                df["PRV NF"] = df["PRV NF"].map(limpar_nf)
+        return result
 
     # ------------------------------------------------------------------ #
     # 1) Carregamento com cabeçalho opcional                               #
@@ -247,6 +260,13 @@ class DataProcessorExt(DataProcessor):
             self._re_siderurgico, regex=True, na=False)
 
         mask = mask_cnpj | mask_texto
+        # [29/10/2026] fornecedores que NÃO são retirados mesmo batendo nos
+        # termos de usina (ex.: SOLUÇÕES EM AÇO USIMINAS volta a aparecer)
+        if self.manter_termos:
+            texto_norm = texto_completo.map(normalizar_texto)
+            padrao = "|".join(re.escape(normalizar_texto(t)) for t in self.manter_termos if t)
+            if padrao:
+                mask = mask & ~texto_norm.str.contains(padrao, regex=True, na=False)
         qtd = int(mask.sum())
 
         self.df_usinas = base[mask].copy()

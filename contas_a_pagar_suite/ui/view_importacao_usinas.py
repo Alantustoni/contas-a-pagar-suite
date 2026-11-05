@@ -35,7 +35,7 @@ class ImportacaoUsinasView(ctk.CTkFrame):
             "de Boletos Recebidos — mesmo formato do Juntador RET.",
             crumb="Novo · monta do CSV", icone="📥").pack(fill="x", pady=(0, 10))
 
-        self.steps = StepBar(self, ["Selecionar CSV + molde",
+        self.steps = StepBar(self, ["Selecionar CSV",
                                     "Ler e validar", "Gerar arquivo"])
         self.steps.pack(fill="x", pady=(0, T.PAD))
 
@@ -46,9 +46,8 @@ class ImportacaoUsinasView(ctk.CTkFrame):
         self.b_csv = botao(box, "📄  Selecionar planilha (CSV/XLSX)",
                            self._selecionar_csv)
         self.b_csv.pack(side="left")
-        self.b_ret = botao(box, "🧩  RET molde (opcional)", self._selecionar_ret,
-                           primario=False)
-        self.b_ret.pack(side="left", padx=8)
+        # botão "RET molde (opcional)" retirado em 30/10/2026: usa sempre o
+        # leiaute padrão embutido (ret_path fica None)
         self.b_abrir = botao(box, "📂  Abrir", self._abrir_saida,
                              primario=False, width=104)
         self.b_pasta = botao(box, "📁  Pasta", self._abrir_pasta,
@@ -61,10 +60,6 @@ class ImportacaoUsinasView(ctk.CTkFrame):
         self.lbl_csv = ctk.CTkLabel(info, text="Planilha: nenhuma selecionada",
                                     font=T.F_PEQUENA, text_color=T.INK_3, anchor="w")
         self.lbl_csv.pack(fill="x")
-        self.lbl_ret = ctk.CTkLabel(
-            info, text="RET modelo: (opcional) — uso o leiaute padrão embutido",
-            font=T.F_PEQUENA, text_color=T.INK_3, anchor="w")
-        self.lbl_ret.pack(fill="x")
 
         op = ctk.CTkFrame(acoes, fg_color="transparent")
         op.pack(fill="x", padx=T.PAD, pady=(0, T.PAD))
@@ -73,29 +68,16 @@ class ImportacaoUsinasView(ctk.CTkFrame):
         # Código de barras). Fornecedores fora do cadastro passam intactos.
         ctk.CTkLabel(op, text="🔁 Troca de CNPJ por filial: sempre ativa",
                      font=T.F_NORMAL, text_color=T.VERDE).pack(side="left")
-        ctk.CTkLabel(op, text="   limite teste (0 = todas):", font=T.F_PEQUENA,
-                     text_color=T.INK_3).pack(side="left", padx=(10, 2))
-        self.e_limite = ctk.CTkEntry(op, width=48, font=T.F_NORMAL,
-                                     border_color=T.BORDA, fg_color=T.CARD,
-                                     placeholder_text="0")
-        self.e_limite.pack(side="left", padx=6)
-        self.e_limite.insert(0, "0")
-        ctk.CTkLabel(op, text="   ✂ Dividir em:", font=T.F_NORMAL,
-                     text_color=T.INK).pack(side="left", padx=(12, 0))
-        self.e_dividir = ctk.CTkEntry(op, width=56, font=T.F_NORMAL,
-                                      border_color=T.BORDA, fg_color=T.CARD,
-                                      placeholder_text="1")
-        self.e_dividir.pack(side="left", padx=6)
-        self.e_dividir.insert(0, "1")
+        # campo "limite teste" retirado em 30/10/2026 — processa sempre todas
         self.b_gerar = botao(op, "⚙  Ler e validar", self._processar, primario=True)
         self.b_gerar.pack(side="left", padx=16)
         self.b_salvar = botao(op, "💾  Salvar arquivo", self._gravar, primario=True)
 
         self.vazio = EmptyState(
-            self, "📥", "Selecione o CSV de boletos e um RET de molde",
+            self, "📥", "Selecione o CSV de boletos",
             "O CSV (Boletos Recebidos) traz nota, valor, CNPJ, vencimento e "
-            "código de barras. O RET serve só como molde do leiaute. Eu monto "
-            "o arquivo, duplico por filial e recalculo os trailers.")
+            "código de barras. Eu monto o arquivo no leiaute padrão, duplico "
+            "por filial e recalculo os trailers.")
         self.vazio.pack(fill="both", expand=True)
 
         self.area = ctk.CTkFrame(self, fg_color="transparent")
@@ -133,18 +115,6 @@ class ImportacaoUsinasView(ctk.CTkFrame):
         self.badge.set("pronto para gerar", "info")
         self.steps.set_ativo(1)
 
-    def _selecionar_ret(self) -> None:
-        if self.runner.ocupado:
-            return
-        c = filedialog.askopenfilename(
-            title="Selecione um RET para usar de molde (leiaute)",
-            initialdir=self.app.config.ultima_pasta("ret") or None,
-            filetypes=[("Arquivos RET", "*.ret *.RET"), ("Todos", "*.*")])
-        if not c:
-            return
-        self.ret_path = Path(c)
-        self.lbl_ret.configure(text=f"RET modelo: {self.ret_path.name}")
-
     def _processar(self) -> None:
         if self.runner.ocupado:
             return
@@ -152,10 +122,7 @@ class ImportacaoUsinasView(ctk.CTkFrame):
             self.app.toast.show("Selecione a planilha de boletos primeiro.",
                                 "err", ms=6000)
             return
-        try:
-            limite = max(0, int(self.e_limite.get().strip() or 0))
-        except ValueError:
-            limite = 0
+        limite = 0                                 # sempre todas
         self.badge.set("processando…", "info")
         self.b_gerar.configure(state="disabled")
         cfg_ret = dict(self.app.config.get("ret", default={}) or {})
@@ -224,13 +191,9 @@ class ImportacaoUsinasView(ctk.CTkFrame):
         if not saida:
             return
         self.app.config.lembrar_pasta("import_usinas_saida", saida)
-        try:
-            n = max(1, int(self.e_dividir.get().strip() or 1))
-        except ValueError:
-            n = 1
         from ..modules import importacao_usinas as imp
         try:
-            caminhos = imp.gravar_dividido(self.resultado, Path(saida), n)
+            caminhos = imp.gravar_dividido(self.resultado, Path(saida), 1)
         except Exception as exc:      # noqa: BLE001
             self.badge.set("erro ao gravar", "err")
             self.app.toast.show(mensagem_erro_amigavel(exc), "err", ms=8000)

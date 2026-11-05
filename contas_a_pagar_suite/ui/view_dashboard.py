@@ -13,6 +13,9 @@ from ..core import historico, theme as T
 from .widgets import Card, MetricCard, Tabela, cabecalho
 
 
+_HIST_PARA_MENU = {"importacao_usinas": "import_usinas"}
+
+
 def _saudacao() -> str:
     h = datetime.now().hour
     if 5 <= h < 12:
@@ -47,13 +50,6 @@ class DashboardView(ctk.CTkFrame):
         for i, c in enumerate((self.c_exec, self.c_conc, self.c_pend, self.c_inc)):
             c.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 10, 0))
 
-        # ── atividade por módulo (mini-gráfico, leitura em 5s) ───────
-        ctk.CTkLabel(self, text="Atividade dos últimos 7 dias", font=T.F_SECAO,
-                     text_color=T.INK, anchor="w").pack(fill="x", pady=(4, 8))
-        self.card_graf = Card(self)
-        self.card_graf.pack(fill="x", pady=(0, T.PAD))
-        self._barras: list = []
-
         # ── pendências abertas ───────────────────────────────────────
         ctk.CTkLabel(self, text="Pendências abertas", font=T.F_SECAO,
                      text_color=T.INK, anchor="w").pack(fill="x", pady=(4, 8))
@@ -70,47 +66,8 @@ class DashboardView(ctk.CTkFrame):
             busca=True, exportar=True, nome_export="historico")
         self.tabela.pack(fill="both", expand=True)
 
+        self._marca = None
         self.atualizar()
-
-    # ------------------------------------------------------------------ #
-    def _montar_grafico(self) -> None:
-        for w in self._barras:
-            w.destroy()
-        self._barras.clear()
-
-        contagem = historico.contagem_por_modulo(dias=7)
-        if not any(contagem.values()):
-            lbl = ctk.CTkLabel(
-                self.card_graf,
-                text="Sem atividade registrada nos últimos 7 dias.",
-                font=T.F_NORMAL, text_color=T.INK_3, anchor="w")
-            lbl.pack(fill="x", padx=T.PAD, pady=14)
-            self._barras.append(lbl)
-            return
-
-        maximo = max(contagem.values()) or 1
-        wrap = ctk.CTkFrame(self.card_graf, fg_color="transparent")
-        wrap.pack(fill="x", padx=T.PAD, pady=(14, 14))
-        wrap.grid_columnconfigure(1, weight=1)
-        self._barras.append(wrap)
-        cores = {"dda": T.AZUL, "remessa": T.AZUL_CLARO,
-                 "ret": T.VERDE, "usinas": T.AMARELO}
-        for r, (mod, qtd) in enumerate(contagem.items()):
-            nome = historico.MODULOS.get(mod, mod)
-            ctk.CTkLabel(wrap, text=nome, font=T.F_PEQUENA,
-                         text_color=T.INK_2, anchor="w", width=150).grid(
-                row=r, column=0, sticky="w", pady=3, padx=(0, 10))
-            trilho = ctk.CTkFrame(wrap, fg_color=T.TRACK, corner_radius=4,
-                                  height=16)
-            trilho.grid(row=r, column=1, sticky="ew", pady=3)
-            trilho.grid_propagate(False)
-            frac = qtd / maximo
-            barra = ctk.CTkFrame(trilho, fg_color=cores.get(mod, T.AZUL),
-                                 corner_radius=4)
-            barra.place(relx=0, rely=0, relwidth=max(0.02, frac), relheight=1)
-            ctk.CTkLabel(wrap, text=str(qtd), font=(T.FONTE, 12, "bold"),
-                         text_color=T.INK, width=36, anchor="e").grid(
-                row=r, column=2, sticky="e", padx=(10, 0))
 
     # ------------------------------------------------------------------ #
     def atualizar(self) -> None:
@@ -119,13 +76,23 @@ class DashboardView(ctk.CTkFrame):
             self._lbl_titulo.configure(text=_saudacao())
         except Exception:
             pass
+        # Só redesenha se o histórico mudou (nova execução) ou virou o dia.
+        # Antes tudo era destruído e recriado a cada volta ao Início → piscava.
+        try:
+            from ..core.paths import HISTORICO_PATH
+            marca = (HISTORICO_PATH.stat().st_mtime_ns
+                     if HISTORICO_PATH.exists() else 0, datetime.now().date())
+        except OSError:
+            marca = None
+        if marca is not None and marca == self._marca:
+            return
+        self._marca = marca
         m = historico.resumo_hoje()
         self.c_exec.set(m["execucoes"], f'{m["modulos_usados"]} módulos usados')
         self.c_conc.set(m["conciliados"])
         self.c_pend.set(m["pendentes"])
         self.c_inc.set(m["inconsistencias"])
 
-        self._montar_grafico()
         self._montar_pendencias()
 
         linhas = []
@@ -173,12 +140,17 @@ class DashboardView(ctk.CTkFrame):
             ctk.CTkLabel(row, text=f"última execução: {data}",
                          font=T.F_PEQUENA, text_color=T.INK_3).pack(
                 side="left", padx=10)
-            ctk.CTkButton(
-                row, text="Abrir →", width=70, height=26,
-                font=(T.FONTE, 11, "bold"), corner_radius=T.RAIO_BTN,
-                fg_color=T.INFO_BG, text_color=T.AZUL, hover_color=T.BORDA,
-                command=lambda k=p["modulo"]: self.app.navegar(k)).pack(
-                side="right")
+            # nome no histórico ≠ chave do menu em alguns módulos; módulo que
+            # saiu do menu não ganha botão (antes dava erro ao clicar)
+            from .app import NAV
+            chave = _HIST_PARA_MENU.get(p["modulo"], p["modulo"])
+            if chave in {k for k, _, _ in NAV}:
+                ctk.CTkButton(
+                    row, text="Abrir →", width=70, height=26,
+                    font=(T.FONTE, 11, "bold"), corner_radius=T.RAIO_BTN,
+                    fg_color=T.INFO_BG, text_color=T.AZUL, hover_color=T.BORDA,
+                    command=lambda k=chave: self.app.navegar(k)).pack(
+                    side="right")
 
         # respiro no fim do card
         fim = ctk.CTkFrame(self.card_pend, fg_color="transparent", height=12)

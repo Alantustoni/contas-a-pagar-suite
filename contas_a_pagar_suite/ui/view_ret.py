@@ -91,33 +91,10 @@ class RetView(ctk.CTkFrame):
             modo2, text="🔁  Duplicar usinas por filial (vincular boleto por CNPJ)",
             font=T.F_NORMAL, progress_color=T.AZUL)
         self.sw_duplicar.pack(side="left")
-        ctk.CTkLabel(modo2, text="limite p/ teste:", font=T.F_PEQUENA,
-                     text_color=T.INK_3).pack(side="left", padx=(12, 4))
-        self.e_dup_limite = ctk.CTkEntry(modo2, width=64, font=T.F_NORMAL,
-                                         border_color=T.BORDA, fg_color=T.CARD,
-                                         placeholder_text="0")
-        self.e_dup_limite.pack(side="left")
-        ctk.CTkLabel(
-            modo2, font=T.F_PEQUENA, text_color=T.INK_3, anchor="w",
-            text="cada título de usina vira 1 cópia por CNPJ de filial "
-                 "(0 = todas; use ex. 10 para o primeiro teste).").pack(
-            side="left", padx=8)
+        # campo "limite p/ teste" retirado em 30/10/2026 — duplica sempre todas
 
-        # ── dividir a saída em N arquivos (para importar em lotes) ────
-        modo3 = ctk.CTkFrame(acoes, fg_color="transparent")
-        modo3.pack(fill="x", padx=T.PAD, pady=(0, T.PAD))
-        ctk.CTkLabel(modo3, text="✂  Dividir a saída em:", font=T.F_NORMAL,
-                     text_color=T.INK).pack(side="left")
-        self.e_dividir = ctk.CTkEntry(modo3, width=56, font=T.F_NORMAL,
-                                      border_color=T.BORDA, fg_color=T.CARD,
-                                      placeholder_text="1")
-        self.e_dividir.pack(side="left", padx=6)
-        self.e_dividir.insert(0, "1")
-        ctk.CTkLabel(
-            modo3, font=T.F_PEQUENA, text_color=T.INK_3, anchor="w",
-            text="arquivo(s) — gera …_parte1deN.txt, _parte2deN.txt… cada um "
-                 "completo (trailers recalculados). Use p/ importar em lotes.").pack(
-            side="left", padx=8)
+        # (opção "Dividir a saída em N arquivos" retirada a pedido em 30/10/2026
+        #  — o arquivo final sai sempre num arquivo só)
 
         # ── estado vazio ─────────────────────────────────────────────
         self.vazio = EmptyState(
@@ -264,10 +241,7 @@ class RetView(ctk.CTkFrame):
         cfg = dict(self.app.config.get("ret", default={}) or {})
         cfg["somente_usinas"] = bool(self.sw_so_usinas.get())
         cfg["duplicar_usinas_por_filial"] = bool(self.sw_duplicar.get())
-        try:
-            cfg["duplicar_limite_teste"] = int(self.e_dup_limite.get().strip() or 0)
-        except ValueError:
-            cfg["duplicar_limite_teste"] = 0
+        cfg["duplicar_limite_teste"] = 0          # sempre todas
         # termos dos grupos de usina (Organizador Usinas) — para o RET
         # reconhecer as mesmas usinas (ARMAR, SOLUÇÕES, etc.)
         padr = self.app.config.get("usinas", "padronizacao_empresa", default={})
@@ -368,13 +342,9 @@ class RetView(ctk.CTkFrame):
         if not saida:
             return
         self.app.config.lembrar_pasta("ret_saida", saida)
-        try:
-            n_partes = max(1, int(self.e_dividir.get().strip() or 1))
-        except ValueError:
-            n_partes = 1
         from ..modules import ret as mod_ret
         try:
-            caminhos = mod_ret.gravar_dividido(self.resultado, Path(saida), n_partes)
+            caminhos = mod_ret.gravar_dividido(self.resultado, Path(saida), 1)
         except Exception as exc:      # noqa: BLE001
             self.badge.set("erro ao gravar", "err")
             self.app.toast.show(mensagem_erro_amigavel(exc), "err", ms=8000)

@@ -43,6 +43,11 @@ from ..core.processor import ProcessingResult
 
 logger = logging.getLogger(__name__)
 
+# [ALAN 29/10/2026] linha de nota já programada no banco
+FILL_AMARELO_LINHA = PatternFill("solid", fgColor="FFFF00")
+# [ALAN 30/10/2026] nota que já veio de Compras (só na Planilha1)
+FILL_VERDE_LINHA = PatternFill("solid", fgColor="C6EFCE")
+
 
 class ExcelReportGenerator:
     """
@@ -50,15 +55,25 @@ class ExcelReportGenerator:
     Não conhece UI. Não conhece pandas além de receber o DataFrame.
     """
 
+    # seção "PAGAMENTOS DO BANCO SEM NOTA NO DDA" na aba ERROS
+    MOSTRAR_BANCO_SEM_NOTA = False
+
     def __init__(
         self,
         result: ProcessingResult,
         config,
         painel_metricas: Optional[Dict[str, Any]] = None,
         resultado_cruzamento=None,
+        df_relatorio: Optional[pd.DataFrame] = None,
     ) -> None:
+        # [ALAN 29/10/2026] df_relatorio = lista já montada pelo ALAN
+        # (pendentes + programadas marcadas em "_PROGRAMADA", fornecedor
+        # abreviado, coluna COMPRAS). Colunas que começam com "_" são
+        # internas e não vão para a planilha.
+        if df_relatorio is not None:
+            self.df = df_relatorio
         # Se há cruzamento com banco, usa apenas pendências reais no relatório principal
-        if resultado_cruzamento is not None and not resultado_cruzamento.df_pendente.empty:
+        elif resultado_cruzamento is not None and not resultado_cruzamento.df_pendente.empty:
             self.df = resultado_cruzamento.df_pendente.copy()
         else:
             self.df = result.df
@@ -138,29 +153,78 @@ class ExcelReportGenerator:
     # Aba Planilha1                                                        #
     # ------------------------------------------------------------------ #
 
+    def _linha_programada(self, idx) -> bool:
+        return bool(self.df.at[idx, "_PROGRAMADA"]) if "_PROGRAMADA" in self.df.columns else False
+
+    def _linha_ja_veio(self, idx) -> bool:
+        """Nota que já veio de Compras (ou CNPJ da lista) — não se cobra."""
+        if "_COMPRAS" not in self.df.columns:
+            return False
+        return str(self.df.at[idx, "_COMPRAS"] or "").strip().upper().startswith("JÁ VEIO")
+
+    def _df_cobranca(self) -> pd.DataFrame:
+        """Lista de cobrança: tudo menos o que já veio de Compras
+        (programadas continuam, em amarelo)."""
+        if "_COMPRAS" not in self.df.columns:
+            return self.df
+        manter = [self._linha_programada(i) or not self._linha_ja_veio(i)
+                  for i in self.df.index]
+        return self.df[manter]
+
     def _criar_aba_dados_brutos(self, writer) -> None:
-        self.df.to_excel(writer, sheet_name="Planilha1", index=False)
+        # [ALAN 30/10/2026] só as colunas que interessam (sem FILIAL/TIPO),
+        # com o título "NOTAS JÁ NO CONTAS A PAGAR" na linha 1
+        colunas = [c for c in ("EMPRESA", "CNPJ", "FORNECEDOR", "PRV NF",
+                               "VENC", "VALOR", "ERROS") if c in self.df.columns]
+        saida = self.df[colunas].copy()
+        # "JÁ VEIO – E-MAIL dd/mm hh:mm (…)" vai DENTRO da coluna ERROS
+        # (só na Planilha1; a aba ERROS continua só com erros de verdade)
+        if "_COMPRAS" in self.df.columns and "ERROS" in saida.columns:
+            saida["ERROS"] = [
+                " | ".join(t for t in (str(e or "").strip(), str(c or "").strip()) if t)
+                for e, c in zip(saida["ERROS"], self.df["_COMPRAS"])]
+        saida.to_excel(writer, sheet_name="Planilha1", index=False, startrow=1)
         ws = writer.book["Planilha1"]
-        ws.freeze_panes = "A2"
+        ncol = len(colunas)
+
+        # título (linha 1)
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncol)
+        titulo = ws.cell(row=1, column=1, value="NOTAS JÁ NO CONTAS A PAGAR")
+        titulo.font = Font(bold=True, size=16)
+        titulo.alignment = ALIGN_CENTER
+        ws.row_dimensions[1].height = 28
+
+        # programadas no banco: linha amarela; já veio de Compras: linha verde
+        for n, idx in enumerate(self.df.index, start=3):
+            if self._linha_programada(idx):
+                for cell in ws[n]:
+                    cell.fill = FILL_AMARELO_LINHA
+            elif self._linha_ja_veio(idx):
+                for cell in ws[n]:
+                    cell.fill = FILL_VERDE_LINHA
+        ws.freeze_panes = "A3"
         ws.sheet_view.showGridLines = True
 
-        for col_idx in range(1, ws.max_column + 1):
-            ws.column_dimensions[get_column_letter(col_idx)].width = 20
+        larguras = {"EMPRESA": 20, "CNPJ": 20, "FORNECEDOR": 20, "PRV NF": 20,
+                    "VENC": 11, "VALOR": 11, "ERROS": 60}
+        for col_idx, nome in enumerate(colunas, start=1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = larguras.get(nome, 20)
 
-        for cell in ws[1]:
+        for cell in ws[2]:
             cell.fill = FILL_CINZA
             cell.font = FONT_BLACK_BOLD
             cell.border = BORDER_THIN
             cell.alignment = ALIGN_CENTER
 
-        for row in ws.iter_rows(min_row=2, max_col=ws.max_column):
+        i_venc = colunas.index("VENC") if "VENC" in colunas else None
+        i_valor = colunas.index("VALOR") if "VALOR" in colunas else None
+        for row in ws.iter_rows(min_row=3, max_col=ncol):
             for cell in row:
                 cell.border = BORDER_THIN
-            n = len(row)
-            if n >= 7 and row[6].value is not None:
-                row[6].number_format = "DD/MM/YYYY"
-            if n >= 8 and row[7].value is not None:
-                row[7].number_format = "#,##0.00"
+            if i_venc is not None and row[i_venc].value is not None:
+                row[i_venc].number_format = "DD/MM/YYYY"
+            if i_valor is not None and row[i_valor].value is not None:
+                row[i_valor].number_format = "#,##0.00"
 
     # ------------------------------------------------------------------ #
     # Aba por empresa (ALFAMETAL / BETAVIARIA)                            #
@@ -178,7 +242,9 @@ class ExcelReportGenerator:
         ws = writer.book[nome_aba]
         ws.sheet_view.showGridLines = False
 
-        subset = self.df[self.df["EMPRESA"].isin(empresas)].copy()
+        # [ALAN 30/10/2026] o que já veio de Compras não entra na cobrança
+        base = self._df_cobranca()
+        subset = base[base["EMPRESA"].isin(empresas)].copy()
         if subset.empty:
             ws.cell(row=1, column=5, value="SEM REGISTROS")
             return
@@ -227,8 +293,9 @@ class ExcelReportGenerator:
             # com colunas de nome especial (PRV NF tem espaço).
             cols_aba = ["EMPRESA", "CNPJ", "FORNECEDOR", "PRV NF", "VENC", "VALOR"]
             dados_lista = dados_dia[cols_aba].values.tolist()
+            programadas = [self._linha_programada(i) for i in dados_dia.index]
             inicio_dados = linha
-            for row_vals in dados_lista:
+            for row_vals, programada in zip(dados_lista, programadas):
                 venc = pd.to_datetime(row_vals[4]).date() if pd.notna(row_vals[4]) else None
                 valor = float(row_vals[5]) if pd.notna(row_vals[5]) else None
                 cells = [
@@ -243,16 +310,21 @@ class ExcelReportGenerator:
                 if self._empresa_destaque(row_vals[0]):
                     for c in cells:
                         c.font = Font(bold=True)
+                # programada no banco: continua na lista, linha amarela
+                if programada:
+                    for c in cells:
+                        c.fill = FILL_AMARELO_LINHA
                 linha += 1
 
             # Aplicar estilos em bloco ao range de dados
             if linha > inicio_dados:
                 self._estilizar_bloco_dados(ws, inicio_dados, linha - 1)
 
-            # Linha de total
-            total = dados_dia["VALOR"].dropna().sum()
+            # Linha de total — FÓRMULA (=SOMA), para recalcular sozinha quando
+            # o usuário apaga uma linha na revisão [ALAN 29/10/2026]
             ws.cell(row=linha, column=9, value="TOTAL").style = "total_linha"
-            c_total = ws.cell(row=linha, column=10, value=float(total))
+            total = (f"=SUM(J{inicio_dados}:J{linha - 1})" if linha > inicio_dados else 0)
+            c_total = ws.cell(row=linha, column=10, value=total)
             c_total.style = "total_linha"
             c_total.number_format = "#,##0.00"
             ws.cell(row=linha, column=9).font = FONT_BLACK_BOLD
@@ -299,7 +371,7 @@ class ExcelReportGenerator:
         ws = writer.book.create_sheet("ALFAMETAL - BTV")
         ws.sheet_view.showGridLines = True
 
-        subset = self.df.copy()
+        subset = self._df_cobranca().copy()
         if subset.empty or subset["VENC"].dropna().empty:
             ws.cell(row=1, column=5, value="SEM REGISTROS")
             return
@@ -398,105 +470,10 @@ class ExcelReportGenerator:
         c2.font = Font(size=10, italic=True, color="666666")
         c2.alignment = ALIGN_CENTER
 
-        # Cards de contagem
-        linha = 4
-        cards = [
-            ("LINHAS ORIGINAIS",   self.total_original,   "2F5496"),
-            ("LINHAS PROCESSADAS", self.total_processado,  "548235"),
-            ("LINHAS COM ERRO",    len(erros_df),          "C00000"),
-        ]
-        col_inicial = 1
-        for titulo_card, valor_card, cor in cards:
-            ws.merge_cells(start_row=linha,     start_column=col_inicial, end_row=linha,     end_column=col_inicial + 1)
-            ws.merge_cells(start_row=linha + 1, start_column=col_inicial, end_row=linha + 1, end_column=col_inicial + 1)
-
-            fill_card = PatternFill("solid", fgColor=cor)
-            c_t = ws.cell(row=linha, column=col_inicial, value=titulo_card)
-            c_t.fill = fill_card
-            c_t.font = Font(bold=True, color="FFFFFF", size=10)
-            c_t.alignment = ALIGN_CENTER
-
-            c_v = ws.cell(row=linha + 1, column=col_inicial, value=int(valor_card))
-            c_v.number_format = "0"
-            c_v.fill = FILL_BRANCO
-            c_v.font = FONT_CARD_NUM
-            c_v.alignment = ALIGN_CENTER
-
-            for r in (linha, linha + 1):
-                for col in range(col_inicial, col_inicial + 2):
-                    cell = ws.cell(row=r, column=col)
-                    cell.border = BORDER_THIN
-                    if r == linha:
-                        cell.fill = fill_card
-
-            col_inicial += 3
-        linha += 4
-
-        # Seção remoções
-        self._escrever_secao_remocoes(ws, linha)
-        linha += 3 + max(len(self.resumo_remocoes), 1) + 2
-
-        # Seção detalhamento de erros
-        ws.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=9)
-        cel = ws.cell(row=linha, column=1, value="DETALHAMENTO DOS ERROS")
-        cel.font = FONT_CARD_TITLE
-        cel.fill = FILL_ROXO
-        cel.alignment = ALIGN_CENTER
-        for c in range(1, 10):
-            ws.cell(row=linha, column=c).fill = FILL_ROXO
-            ws.cell(row=linha, column=c).font = FONT_CARD_TITLE
-            ws.cell(row=linha, column=c).border = BORDER_THIN
-        linha += 1
-
-        headers_erro = [
-            "TIPO DO ERRO", "FILIAL", "EMPRESA", "CNPJ",
-            "FORNECEDOR", "PRV NF", "VENC", "VALOR", "OBSERVAÇÃO",
-        ]
-        for col_idx, header in enumerate(headers_erro, start=1):
-            c = ws.cell(row=linha, column=col_idx, value=header)
-            c.fill = FILL_CINZA
-            c.font = FONT_BLACK_BOLD
-            c.border = BORDER_THIN
-            c.alignment = ALIGN_CENTER
-        linha_inicio_tabela = linha
-        linha += 1
-
-        if erros_df.empty:
-            ws.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=9)
-            ws.cell(row=linha, column=1, value="Nenhum erro encontrado").border = BORDER_THIN
-            ws.cell(row=linha, column=1).alignment = ALIGN_CENTER
-        else:
-            cols_erros = ["ERROS", "FILIAL", "EMPRESA", "CNPJ", "FORNECEDOR", "PRV NF", "VENC", "VALOR"]
-            erros_lista = erros_df[cols_erros].values.tolist()
-            for i, row_vals in enumerate(erros_lista):
-                vencimento = pd.to_datetime(row_vals[6]).to_pydatetime() if pd.notna(row_vals[6]) else None
-                valor = float(row_vals[7]) if pd.notna(row_vals[7]) else None
-                fill = FILL_AZUL_CLARO if i % 2 == 0 else FILL_BRANCO
-
-                valores_linha = [
-                    row_vals[0],  # ERROS
-                    row_vals[1],  # FILIAL
-                    row_vals[2],  # EMPRESA
-                    row_vals[3],  # CNPJ
-                    row_vals[4],  # FORNECEDOR
-                    row_vals[5],  # PRV NF
-                    vencimento,
-                    valor,
-                    "Verificar informação",
-                ]
-                for col_idx, val in enumerate(valores_linha, start=1):
-                    cell = ws.cell(row=linha, column=col_idx, value=val)
-                    cell.fill = fill
-                    cell.border = BORDER_THIN
-                    cell.alignment = ALIGN_VCENTER
-
-                ws.cell(row=linha, column=7).number_format = "DD/MM/YYYY"
-                ws.cell(row=linha, column=7).alignment = ALIGN_CENTER
-                ws.cell(row=linha, column=8).number_format = "#,##0.00"
-                ws.cell(row=linha, column=8).alignment = ALIGN_RIGHT
-                linha += 1
-
-        ws.auto_filter.ref = f"A{linha_inicio_tabela}:I{linha - 1}"
+        # [ALAN 29/10/2026] cards de contagem, "Remoções automáticas" e
+        # "Detalhamento dos erros" retirados a pedido do usuário — o erro de
+        # cada linha continua na coluna ERROS da Planilha1.
+        linha = 2
 
         # ── Seção: Possíveis duplicatas ──────────────────────────── #
         if self.duplicatas is not None and not self.duplicatas.empty:
@@ -555,7 +532,7 @@ class ExcelReportGenerator:
             FILL_VERDE_SEC = PatternFill("solid", fgColor="1E7E34")
             ws.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=9)
             cs = ws.cell(row=linha, column=1,
-                value=f"✓  PROGRAMADOS NO BANCO — {len(resultado_cruzamento.df_programado)} pagamento(s) já consta(m) na planilha do banco e foram removidos das pendências")
+                value=f"✓  PROGRAMADOS NO BANCO — {len(resultado_cruzamento.df_programado)} pagamento(s) já consta(m) na planilha do banco — continuam na lista, em amarelo")
             cs.font = Font(bold=True, color="FFFFFF", size=11)
             cs.fill = FILL_VERDE_SEC
             cs.alignment = ALIGN_CENTER
@@ -596,6 +573,22 @@ class ExcelReportGenerator:
         # ── Seção: CONCILIAÇÃO (item 1) ─────────────────────────────── #
         from ..core.conciliacao import conciliar
         conc = conciliar(self, resultado_cruzamento)
+        # [ALAN 29/10/2026] só aparece quando a conta NÃO fecha (alerta);
+        # o "conciliação OK" e a lista de colunas detectadas saíram.
+        if not conc.ok:
+            self._escrever_conciliacao(ws, linha, conc)
+            linha += 3 + len(conc.checagens)
+        if self.col_warnings:
+            linha += 1
+            for aviso in self.col_warnings:
+                ws.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=9)
+                cw = ws.cell(row=linha, column=1, value="⚠  " + str(aviso))
+                cw.font = Font(italic=True, color="B45309")
+                cw.border = BORDER_THIN
+                linha += 1
+        self._escrever_restante_erros(ws, linha, resultado_cruzamento)
+
+    def _escrever_conciliacao(self, ws, linha: int, conc) -> None:
         linha += 2
         cor_conc = "1E7E34" if conc.ok else "C00000"
         ws.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=9)
@@ -621,34 +614,12 @@ class ExcelReportGenerator:
             ).border = BORDER_THIN
             linha += 1
 
-        # ── Seção: COLUNAS DETECTADAS (item 4) ──────────────────────── #
-        if self.col_map:
-            linha += 2
-            ws.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=9)
-            ct = ws.cell(row=linha, column=1, value="COLUNAS DETECTADAS NA PLANILHA DDA (confira se estão corretas)")
-            ct.font = FONT_CARD_TITLE
-            ct.fill = FILL_CINZA_ESCURO
-            ct.alignment = ALIGN_CENTER
-            for c in range(1, 10):
-                ws.cell(row=linha, column=c).fill = FILL_CINZA_ESCURO
-                ws.cell(row=linha, column=c).font = FONT_CARD_TITLE
-                ws.cell(row=linha, column=c).border = BORDER_THIN
-            linha += 1
-            for campo, coluna in self.col_map.items():
-                ws.cell(row=linha, column=1, value=campo).border = BORDER_THIN
-                ws.merge_cells(start_row=linha, start_column=2, end_row=linha, end_column=9)
-                ws.cell(row=linha, column=2, value=str(coluna)).border = BORDER_THIN
-                linha += 1
-            for aviso in self.col_warnings:
-                ws.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=9)
-                cw = ws.cell(row=linha, column=1, value="⚠  " + str(aviso))
-                cw.font = Font(italic=True, color="B45309")
-                cw.border = BORDER_THIN
-                linha += 1
-
+    def _escrever_restante_erros(self, ws, linha: int, resultado_cruzamento) -> None:
         # ── Seção: PAGAMENTOS DO BANCO SEM NOTA (item 5) ────────────── #
+        # [ALAN 30/10/2026] desligada a pedido do usuário: não sai mais na
+        # aba ERROS (continua só na tela do ALAN). Para voltar: True.
         nao_casados = getattr(resultado_cruzamento, "pagamentos_nao_casados", None) if resultado_cruzamento else None
-        if nao_casados:
+        if self.MOSTRAR_BANCO_SEM_NOTA and nao_casados:
             linha += 2
             FILL_LARANJA_SEC = PatternFill("solid", fgColor="B45309")
             ws.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=9)

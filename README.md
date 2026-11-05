@@ -5,8 +5,8 @@
 Aplicativo desktop (Windows) que junta numa janela só as rotinas de um
 setor de contas a pagar que antes rodavam em 5 executáveis separados:
 arquivos bancários **CNAB240**, retorno **SISPAG Itaú**, planilha **DDA**,
-conciliação **remessa × banco** e a planilha de títulos das usinas
-siderúrgicas.
+conciliação **remessa × banco**, o pagamento mensal de **pensões** e a
+conferência das notas que o setor de **Compras** envia por e-mail.
 
 Está em uso diário desde jul/2026 num setor financeiro real. Este
 repositório é a versão pública: **todos os dados são sintéticos** (CNPJs,
@@ -19,7 +19,9 @@ trocados por valores fictícios com dígito verificador válido).
 > payable in Brazil. It merges and validates CNAB240 bank files (Bradesco /
 > Itaú), combines SISPAG payment returns, reconciles the bank's DDA
 > (electronic bill presentment) spreadsheet against scheduled payments, and
-> reconciles ERP payment batches against the bank. 106 automated tests.
+> reconciles ERP payment batches against the bank, turns the HR alimony
+> report into an ERP import file, and checks the purchasing team's Outlook
+> e-mails against the invoice spreadsheet. 114 automated tests.
 > All data in this repo is synthetic.
 
 ---
@@ -31,9 +33,10 @@ trocados por valores fictícios com dígito verificador válido).
 | **Código de barras (Juntador RET)** | Vários `.RET` CNAB240 de cobrança precisam virar um único arquivo de importação para o ERP. O programa antigo colava trailers fixos e o total saía errado. | Valida a estrutura, converte Itaú (341) → Bradesco (237), separa por empresa, filtra usinas, duplica títulos por CNPJ de filial, ordena por vencimento sem quebrar o par G + H/Y, renumera e **recalcula os trailers** de lote e de arquivo. |
 | **Retorno (SISPAG)** | Retornos diários de pagamento do Itaú (segmentos A/B/J, vários lotes) precisam ser enviados juntos. | Valida header/trailer e pares de lote, rejeita arquivo de cobrança enviado por engano, renumera os lotes `0001..` e recalcula o trailer. |
 | **Importação Usinas** | Boletos das usinas chegam numa planilha DDA, mas o ERP só lê CNAB240. | Monta registros segmento G a partir de um molde, tira o vencimento do **fator de vencimento do código de barras** (nova base Febraban de 22/02/2025) e avisa colisões de valor + vencimento. |
-| **Organizador DDA** | Saber quais boletos do DDA já estão agendados no banco. | Normaliza a planilha (dias úteis com feriados móveis), cruza com os extratos do banco em estágios — CNPJ → (data, valor) → nome fuzzy — com baixa 1:1, e garante que **nenhuma nota some sem aviso**. |
+| **Organizador DDA** | Saber quais boletos do DDA já estão agendados no banco — e quais o setor de Compras já mandou. | Normaliza a planilha (dias úteis com feriados móveis), cruza com os extratos do banco em estágios — CNPJ → (data, valor) → nome fuzzy — com baixa 1:1, e garante que **nenhuma nota some sem aviso**. Marca como **"JÁ VEIO"** o que está na planilha de notas de Compras (NF + nome + vencimento → NF + vencimento → nome + vencimento, cada nota cobre um boleto só) e abrevia o nome do fornecedor sem perder o que o identifica. |
+| **Conferir Compras** | A automação do e-mail de Compras (Power Automate + Office Script) pode pular notas sem ninguém perceber. | Lê a pasta de Compras do Outlook **só para leitura** (PowerShell/COM), extrai as notas da tabela do e-mail ou do assunto, compara com a planilha pelo ID do e-mail e pela chave empresa + fornecedor + NF e inclui as que faltaram, com backup antes. |
+| **Pensões** | Todo mês o Excel do DP era colado à mão numa planilha, com PROCV limitado e divisão manual de quem paga mais de uma pensão. | Lê o relatório do DP direto do XML do `.xlsx` (o arquivo vem com estilos corrompidos), busca cada matrícula no cadastro, pede só o valor das pensões extras, confere a soma com o rodapé e gera o CSV de importação do ERP (`;`, CRLF, Windows-1252). Matrícula sem cadastro **bloqueia** em vez de virar `#N/A`. |
 | **Remessa × Banco** | Conferir se tudo que saiu do ERP chegou ao banco. | Concilia em 3 passadas (exato → ±5 dias úteis → nome ≥ 75%) e detecta remessas inteiras ausentes. Lê Excel "difícil" com 6 alternativas (XML, openpyxl, xlrd, pandas, Excel COM, LibreOffice). |
-| **Organizador Usinas** | Planilha das usinas vem sem padrão e a NF era cortada errado. | Detecta as colunas pelo conteúdo, corrige a NF por regra configurável e manda linhas inválidas para a aba "Verificar" com o motivo. |
 | **Início / Configurações** | — | Dashboard do dia, histórico de execuções e uma configuração central com gravação atômica. |
 
 ## Antes × depois
@@ -41,18 +44,13 @@ trocados por valores fictícios com dígito verificador válido).
 A suíte nasceu reescrevendo ferramentas antigas que tinham bugs reais:
 
 ```python
-# Organizador de Usinas antigo (organizador.py)
-nf = str(row["NF"]).replace(".0", "").strip()   # remove ".0" em QUALQUER posição
-return nf[:-2]                                   # corta 2 dígitos SEMPRE
-
 # Juntador RET antigo (juntador_ret_v2.py): trailers com contadores fixos
 LINHA_FINAL_1 = "23700025         000032000000000000000000000000000000000000000000"
 LINHA_FINAL_2 = "23799999         000002000108"
 ```
 
-Hoje a NF é tratada por regra (`\.0+$` ancorado, corte configurável,
-tamanho mínimo) e os trailers são recalculados a partir do conteúdo. O modo
-antigo continua disponível em Configurações, para comparação.
+Hoje os trailers são recalculados a partir do conteúdo. O modo antigo
+continua disponível em Configurações, para comparação.
 
 ## Como rodar
 
@@ -81,14 +79,17 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-106 testes (102 passam e 4 são `xfail` de propósito, documentando o
+114 testes (110 normais e 4 marcados como `xfail`, que documentam o
 comportamento do modo legado). Cobrem, entre outros:
 
 - montagem e trailers de CNAB240, conversão de banco, divisão em partes;
 - fusão de retornos SISPAG e rejeição de arquivos inválidos;
 - fator de vencimento e validação do molde (valor da barra = campo valor);
-- bug da NF (resíduo de float, ponto no meio, NF vazia, regras por usina);
 - cruzamento DDA × banco, conciliação e exportação para Excel;
+- "JÁ VEIO" do DDA × Compras (ordem das regras, uma nota por boleto);
+- leitura dos e-mails de Compras e comparação com a planilha;
+- pensões: divisão entre pensionistas, título com ponto, bloqueios e
+  leiaute do CSV;
 - configuração central (merge, migração de versão, gravação atômica).
 
 ## Estrutura
@@ -96,7 +97,7 @@ comportamento do modo legado). Cobrem, entre outros:
 ```
 contas_a_pagar_suite/
 ├── core/        config central, histórico, paths, tema, utils (valor/data BR)
-├── modules/     regras de negócio, sem interface (ret, retorno, usinas, ...)
+├── modules/     regras de negócio, sem interface (ret, retorno, pensoes, ...)
 ├── ui/          interface CustomTkinter — uma tela por módulo
 ├── vendor/      motores de dois projetos anteriores do mesmo autor
 │   ├── organizador_dda/   (Organizador DDA V7)

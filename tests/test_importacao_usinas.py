@@ -145,8 +145,8 @@ def test_monta_com_molde_embutido(tmp_path):
         _linha("90.100.200/0001-09", "24/09/2026", "0417529701", "84176,26",
                "USINA SIDERURGICA MG USIMINAS"),
     ])
-    # duplicação por filial é ON por padrão desde a v2.9; aqui desligamos
-    # de propósito para conferir o registro montado a partir do molde
+    # desde 29/09 a duplicação por filial é ON por padrão (obrigatória na
+    # tela); aqui o foco é o molde embutido, então desliga explicitamente.
     r = imp.processar(csv, CFG_RET, FILIAIS, duplicar_filial=False)
     assert r.total_validos == 1
     assert r.titulos_duplicados == 0
@@ -160,17 +160,13 @@ def test_monta_com_molde_embutido(tmp_path):
     assert g[63:77] == "90100200000109"          # CNPJ da matriz, sem duplicar
 
 
-def test_padrao_duplica_por_filial(tmp_path):
-    # sem passar nada, cada boleto de usina vira cópias com CNPJ de filial
+def test_duplicacao_por_filial_ligada_por_padrao(tmp_path):
     csv = _csv(tmp_path, [
         _linha("90.100.200/0001-09", "24/09/2026", "0417529701", "84176,26",
                "USINA SIDERURGICA MG USIMINAS"),
     ])
     r = imp.processar(csv, CFG_RET, FILIAIS)
-    assert r.total_validos == 1
-    assert r.titulos_duplicados >= 1
-    gs = [l for l in r.linhas_finais if l[7:8] == "3" and l[13:14] == "G"]
-    assert {g[63:77] for g in gs} <= {"90100200000109"} | set(FILIAIS["90100200"])
+    assert r.titulos_duplicados == 1
 
 
 def test_relatorio_colisoes(tmp_path):

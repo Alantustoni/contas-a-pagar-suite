@@ -24,6 +24,15 @@ from ..core.utils import (abrir_no_sistema, formatar_moeda,
 from .widgets import (Badge, Card, EmptyState, MetricCard, StepBar, Tabela,
                       ThreadRunner, botao, cabecalho)
 
+# situação da nota → (fundo da linha, cor do número no cartão)
+COR_SIT = {
+    "prog": (T.AMARELO_BG, T.AMARELO),   # programada: amarela, como no Excel
+    "ok":   ("#ECFDF5", T.VERDE),        # já veio (Compras / CNPJ da lista)
+    "cob":  ("", T.VERMELHO),            # cobrar: linha branca/zebra
+}
+_PILULAS = [("todas", "Todas"), ("cob", "A cobrar"),
+            ("ok", "Já vieram"), ("prog", "Programadas")]
+
 
 class DdaView(ctk.CTkFrame):
     def __init__(self, master, app) -> None:
@@ -93,18 +102,18 @@ class DdaView(ctk.CTkFrame):
         # linha 1: números principais
         self.l1 = l1 = ctk.CTkFrame(self.area, fg_color="transparent")
         l1.pack(fill="x", pady=(0, 10))
-        for i in range(3):                       # 3 cards fixos + erro opcional
+        for i in range(4):                       # 4 cards fixos + erro opcional
             l1.grid_columnconfigure(i, weight=1, uniform="m")
-        l1.grid_columnconfigure(3, weight=0, uniform="m")   # col do erro: só com erro
-        self.c_linhas = MetricCard(l1, "Linhas tratadas")
-        self.c_prog   = MetricCard(l1, "Programadas", T.VERDE)
-        self.c_pend   = MetricCard(l1, "Pendentes", T.AMARELO)
+        l1.grid_columnconfigure(4, weight=0, uniform="")    # col do erro: só com erro
+        self.c_linhas = MetricCard(l1, "Notas tratadas")
+        self.c_prog   = MetricCard(l1, "Programadas", COR_SIT["prog"][1])
+        self.c_ok     = MetricCard(l1, "Já vieram", COR_SIT["ok"][1])
+        self.c_pend   = MetricCard(l1, "A cobrar", COR_SIT["cob"][1])
         self.c_erros  = MetricCard(l1, "Linhas com erro", T.VERMELHO)
-        # os 3 primeiros já aparecem (Programadas/Pendentes com "—" até cruzar),
-        # evitando colunas vazias no meio da linha.
-        self.c_linhas.grid(row=0, column=0, sticky="nsew")
-        self.c_prog.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
-        self.c_pend.grid(row=0, column=2, sticky="nsew", padx=(10, 0))
+        # os 4 primeiros já aparecem (com "—" até cruzar), evitando
+        # colunas vazias no meio da linha.
+        for i, c in enumerate((self.c_linhas, self.c_prog, self.c_ok, self.c_pend)):
+            c.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 10, 0))
 
         # linha 2: semana + exclusões
         l2 = ctk.CTkFrame(self.area, fg_color="transparent")
@@ -139,31 +148,32 @@ class DdaView(ctk.CTkFrame):
             alinhamentos=["w", "w", "w", "w", "e"])
         self.tab_prop.pack(fill="x")
 
-        # seção: notas programadas
-        self.sec_prog = ctk.CTkFrame(self.area, fg_color="transparent")
-        ctk.CTkLabel(self.sec_prog, text="Notas programadas (conferem no banco)",
-                     font=T.F_SECAO, text_color=T.VERDE, anchor="w").pack(
-            fill="x", pady=(4, 6))
-        self.tab_prog = Tabela(
-            self.sec_prog, ["Empresa", "Fornecedor", "NF", "Vencimento",
-                            "Data banco", "Valor", "Match"],
-            larguras=[140, 220, 90, 100, 100, 120, 70], altura=200,
-            busca=True, exportar=True, nome_export="programadas",
-            alinhamentos=["w", "w", "w", "w", "w", "e", "w"])
-        self.tab_prog.pack(fill="x")
-
-        # seção: pendentes
+        # seção: notas da semana — uma lista só (cobrar + já vieram +
+        # programadas), linha tingida pela situação e pílulas de filtro
         self.sec_pend = ctk.CTkFrame(self.area, fg_color="transparent")
-        ctk.CTkLabel(self.sec_pend, text="Notas pendentes",
-                     font=T.F_SECAO, text_color=T.AMARELO, anchor="w").pack(
-            fill="x", pady=(4, 6))
+        topo = ctk.CTkFrame(self.sec_pend, fg_color="transparent")
+        topo.pack(fill="x", pady=(4, 6))
+        ctk.CTkLabel(topo, text="Notas da semana", font=T.F_SECAO,
+                     text_color=T.INK, anchor="w").pack(side="left")
+        self._pilulas: Dict[str, ctk.CTkButton] = {}
+        self._filtro = "todas"
+        for chave, _rot in _PILULAS:
+            b = ctk.CTkButton(
+                topo, text=_rot, height=30, width=10, corner_radius=15,
+                border_width=1, font=(T.FONTE, 12, "bold"),
+                command=lambda k=chave: self._filtrar(k))
+            b.pack(side="left", padx=(12 if not self._pilulas else 6, 0))
+            self._pilulas[chave] = b
         self.tabela = Tabela(
             self.sec_pend, ["Empresa", "Fornecedor", "NF", "Vencimento",
-                            "Valor"],
-            larguras=[160, 240, 110, 110, 130], altura=200,
-            busca=True, exportar=True, nome_export="pendentes",
-            alinhamentos=["w", "w", "w", "w", "e"])
+                            "Valor", "Situação"],
+            larguras=[150, 230, 100, 100, 120, 230], altura=320,
+            busca=True, exportar=True, nome_export="notas_da_semana",
+            alinhamentos=["w", "w", "w", "w", "e", "w"])
+        for tag, (fundo, _cor) in COR_SIT.items():
+            self.tabela.cor_tag(tag, fundo=fundo)
         self.tabela.pack(fill="x")
+        self._pintar_pilulas({})
 
         # seção: pagamentos do banco SEM nota no DDA (melhoria vinda do DDA V7)
         self.sec_semnota = ctk.CTkFrame(self.area, fg_color="transparent")
@@ -177,6 +187,26 @@ class DdaView(ctk.CTkFrame):
             larguras=[180, 250, 110, 130], altura=160,
             alinhamentos=["w", "w", "w", "e"])
         self.tab_semnota.pack(fill="x")
+
+    # ------------------------------------------------------------------ #
+    # Pílulas de filtro (Todas · A cobrar · Já vieram · Programadas)      #
+    # ------------------------------------------------------------------ #
+    def _filtrar(self, chave: str) -> None:
+        self._filtro = chave
+        self.tabela.filtrar_tags(None if chave == "todas" else {chave})
+        self._pintar_pilulas(self.tabela.contar_tags())
+
+    def _pintar_pilulas(self, cont: Dict[str, int]) -> None:
+        total = sum(cont.values())
+        for chave, rot in _PILULAS:
+            n = total if chave == "todas" else cont.get(chave, 0)
+            ativo = chave == self._filtro
+            self._pilulas[chave].configure(
+                text=f"{rot}  {n}",
+                fg_color=T.AZUL if ativo else T.CARD,
+                hover_color=T.AZUL_HOVER if ativo else T.FUNDO,
+                text_color=T.BRANCO if ativo else T.INK_2,
+                border_color=T.AZUL if ativo else T.BORDA)
 
     # ------------------------------------------------------------------ #
     def _cta(self, texto: str, comando) -> None:
@@ -273,12 +303,13 @@ class DdaView(ctk.CTkFrame):
         grupos = (self.app.config.get("dda_grupos_usinas", default=None)
                   or self.app.config.get("usinas", "padronizacao_empresa",
                                          default=None))
+        manter = self.app.config.get("dda_usinas_manter", default=[]) or []
 
         def trabalho():
             from ..modules.dda_ext import (DataProcessorExt,
                                            semana_do_resultado)
             from ..vendor.organizador_dda.core.metrics import calcular_metricas
-            proc = DataProcessorExt(config_dda, grupos)
+            proc = DataProcessorExt(config_dda, grupos, manter_termos=manter)
             result = proc.processar(arquivo)
             extras = {
                 "semana": semana_do_resultado(result.df),
@@ -298,6 +329,11 @@ class DdaView(ctk.CTkFrame):
         r = self.result
 
         self.c_linhas.set(r.total_processado, f"de {r.total_original} originais")
+        # DDA novo: a lista e os números do cruzamento anterior saem da tela
+        for c in (self.c_prog, self.c_ok, self.c_pend):
+            c.set("—")
+        self.sec_pend.pack_forget()
+        self.sec_semnota.pack_forget()
         self.c_semana.set(self.extras["semana"],
                           "menor → maior vencimento tratado")
         self.c_prop.set(r.removidas_proposta)
@@ -322,12 +358,12 @@ class DdaView(ctk.CTkFrame):
 
         n_erros = int((r.df["ERROS"] != "").sum()) if "ERROS" in r.df else 0
         if n_erros:
-            self.l1.grid_columnconfigure(3, weight=1, uniform="m")
-            self.c_erros.grid(row=0, column=3, sticky="nsew", padx=(10, 0))
+            self.l1.grid_columnconfigure(4, weight=1, uniform="m")
+            self.c_erros.grid(row=0, column=4, sticky="nsew", padx=(10, 0))
             self.c_erros.set(n_erros)
         else:
             self.c_erros.grid_remove()
-            self.l1.grid_columnconfigure(3, weight=0, uniform="m")  # colapsa a coluna
+            self.l1.grid_columnconfigure(4, weight=0, uniform="")   # colapsa a coluna
 
         aviso_pos = (" · colunas mapeadas pela posição (sem cabeçalho)"
                      if self.extras["posicional"] else "")
@@ -380,6 +416,11 @@ class DdaView(ctk.CTkFrame):
         self._ocupado("Cruzando com o banco…")
         df = self.result.df
         config_dda = self.app.config.config_dda()
+        manter = self.app.config.get("dda_usinas_manter", default=[]) or []
+        cfg = self.app.config
+        compras_path = cfg.get("dda_compras_path", default="") or ""
+        nao_cobrar = cfg.get("dda_cnpjs_ja_veio", default=[]) or []
+        feriados = cfg.get("feriados_nacionais", default=[]) or []
 
         def progresso(pct: float, msg: str) -> None:
             # chamado da THREAD de trabalho — o after() agenda para a thread
@@ -406,18 +447,33 @@ class DdaView(ctk.CTkFrame):
                 pagamentos.extend(parse_banco(
                     p,
                     termos_siderurgicos=config_dda.remover_texto,
-                    cnpjs_excluidos=config_dda.cnpjs_excluidos))
+                    cnpjs_excluidos=config_dda.cnpjs_excluidos,
+                    manter_termos=manter))
             rc = cruzar(df, pagamentos, callback_progresso=progresso)
             try:
                 aprender_do_cruzamento(rc)
             except Exception:
                 pass
-            return rc, detectados
+            # situação de cada nota na tela: confere já com a planilha de
+            # Compras (o relatório refaz a mesma conta na hora de exportar)
+            from ..modules import dda_compras as DC
+            df_sit = DC.montar_df_relatorio(df, rc, abreviar=True)
+            notas, erro = [], ""
+            if compras_path:
+                try:
+                    notas = DC.ler_compras(Path(compras_path), DC.DiaUtil(feriados))
+                except Exception as exc:       # noqa: BLE001 — a tela sai mesmo assim
+                    erro = mensagem_erro_amigavel(exc)
+            else:
+                erro = "planilha de Compras não configurada"
+            resumo = DC.marcar_ja_veio(df_sit, notas, nao_cobrar)
+            resumo.erro = erro
+            return rc, detectados, df_sit, resumo
 
         self.runner.executar(trabalho, self._cruzado, self._falhou)
 
     def _cruzado(self, carga) -> None:
-        self.rc, detectados = carga
+        self.rc, detectados, df_sit, resumo = carga
         self._livre()
         rc = self.rc
 
@@ -431,46 +487,57 @@ class DdaView(ctk.CTkFrame):
 
         # a partir daqui é só apresentação — protegido para não travar nada
         try:
-            self._render_cruzado(rc, detectados)
+            self._render_cruzado(rc, detectados, df_sit, resumo)
         except Exception as exc:      # noqa: BLE001
             self.badge.set(f"{rc.total_programado} programadas · "
                            f"{rc.total_pendente} pendentes", "ok")
+            try:   # a lista da tela sem a situação, para não ficar vazia
+                self.tabela.preencher([
+                    [r.get("EMPRESA", ""), r.get("FORNECEDOR", ""), r.get("PRV NF", ""),
+                     _fmt_data(r.get("VENC")), _fmt_valor(r.get("VALOR")), ""]
+                    for _, r in df_sit.head(2000).iterrows()])
+                self.sec_pend.pack(fill="x")
+            except Exception:   # noqa: BLE001 — só exibição
+                pass
             self.app.toast.show(
                 "Cruzamento concluído. Já dá para exportar — mas houve um "
                 f"erro ao montar as tabelas da tela: {exc}", "warn", ms=8000)
 
-    def _render_cruzado(self, rc, detectados) -> None:
-        # c_prog/c_pend já estão na grade desde o início (mostravam "—")
-        self.c_prog.set(rc.total_programado, formatar_moeda(rc.valor_programado))
-        self.c_pend.set(rc.total_pendente, formatar_moeda(rc.valor_pendente))
+    def _render_cruzado(self, rc, detectados, df_sit, resumo) -> None:
+        from ..modules import dda_compras as DC
 
-        # notas programadas na tela (sem abrir o Excel)
-        if not rc.df_programado.empty:
-            self.tab_prog.preencher([
-                [row.get("EMPRESA", ""), row.get("FORNECEDOR", ""),
-                 row.get("PRV NF", ""), _fmt_data(row.get("VENC")),
-                 str(row.get("BANCO_DATA", ""))[:10],
-                 formatar_moeda(row.get("VALOR")),
-                 row.get("MATCH_TIPO", "")]
-                for _, row in rc.df_programado.head(300).iterrows()
-            ])
-            self.sec_prog.pack(fill="x")
-        else:
-            self.sec_prog.pack_forget()
-
-        linhas = []
-        if not rc.df_pendente.empty:
-            for _, row in rc.df_pendente.head(200).iterrows():
-                linhas.append([
-                    row.get("EMPRESA", ""), row.get("FORNECEDOR", ""),
-                    row.get("PRV NF", ""), _fmt_data(row.get("VENC")),
-                    formatar_moeda(row.get("VALOR")),
-                ])
-        self.tabela.preencher(linhas)
+        # uma lista só: a cobrar + já vieram + programadas
+        linhas, tags = [], []
+        valores = {"prog": 0.0, "ok": 0.0, "cob": 0.0}
+        for _, row in df_sit.head(2000).iterrows():
+            tag, texto = DC.situacao(row.get(DC.COL_PROGRAMADA),
+                                     row.get(DC.COL_COMPRAS),
+                                     row.get(DC.COL_BANCO_DATA, ""))
+            linhas.append([row.get("EMPRESA", ""), row.get("FORNECEDOR", ""),
+                           row.get("PRV NF", ""), _fmt_data(row.get("VENC")),
+                           _fmt_valor(row.get("VALOR")), texto])
+            tags.append(tag)
+            v = parse_valor_br(row.get("VALOR")) if not isinstance(
+                row.get("VALOR"), (int, float)) else row.get("VALOR")
+            if v is not None and v == v:
+                valores[tag] += float(v)
+        self.tabela.preencher(linhas, tags=tags)
+        self._filtro = "todas"
+        self.tabela.filtrar_tags(None)
+        cont = self.tabela.contar_tags()
+        self._pintar_pilulas(cont)
         if linhas:
-            self.sec_pend.pack(fill="x")
+            self.sec_pend.pack(fill="x", before=self.sec_semnota
+                               if self.sec_semnota.winfo_manager() else None)
         else:
             self.sec_pend.pack_forget()
+
+        # cartões (já estão na grade desde o início, mostrando "—")
+        self.c_prog.set(cont.get("prog", 0), formatar_moeda(valores["prog"]))
+        self.c_ok.set(cont.get("ok", 0),
+                      "Compras + CNPJs da lista" if not resumo.erro
+                      else "só CNPJs da lista — Compras não lida")
+        self.c_pend.set(cont.get("cob", 0), formatar_moeda(valores["cob"]))
 
         # pagamentos do banco sem nota (melhoria vinda do DDA V7)
         sem_nota = getattr(rc, "pagamentos_nao_casados", []) or []
@@ -489,21 +556,26 @@ class DdaView(ctk.CTkFrame):
         # trava de conciliação: a conta entrada = saída fechou?
         conc = self._conciliar(rc)
         tipo = "ok" if (conc is None or conc.ok) else "err"
-        base = f"{rc.total_programado} programadas · {rc.total_pendente} pendentes"
+        a_cobrar = cont.get("cob", 0)
+        base = f"{cont.get('prog', 0)} programadas · {a_cobrar} a cobrar"
         if sem_nota:
             base += f" · {len(sem_nota)} banco s/ nota"
         if conc is not None and not conc.ok:
             base += " · ⚠ conciliação não fechou"
-        self.badge.set(base, tipo if rc.total_pendente == 0 or sem_nota else "warn")
+        self.badge.set(base, tipo if a_cobrar == 0 or sem_nota else "warn")
 
         # (o botão "Exportar" e o passo 3 já foram ativados em _cruzado)
         msg = "Cruzamento concluído — " + " | ".join(detectados[:3])
+        if resumo.erro:
+            msg += (f". Não consegui ler a planilha de Compras ({resumo.erro}) — "
+                    "'Já vieram' tem só os CNPJs da lista.")
         if conc is not None and not conc.ok:
             msg = ("⚠ CONCILIAÇÃO NÃO FECHOU — alguma nota pode ter se "
                    "perdido. Confira a aba ERROS do relatório.")
             self.app.toast.show(msg, "err", ms=9000)
         else:
-            self.app.toast.show(msg, "ok", ms=6000)
+            self.app.toast.show(msg, "warn" if resumo.erro else "ok",
+                                ms=9000 if resumo.erro else 6000)
 
     def _conciliar(self, rc):
         """Roda a trava de conciliação do DDA V7 (nenhuma nota some calada)."""
@@ -530,16 +602,37 @@ class DdaView(ctk.CTkFrame):
         self._ocupado("Gerando relatório…")
         config_dda = self.app.config.config_dda()
         result, metricas, rc = self.result, self.metricas, self.rc
+        cfg = self.app.config
+        compras_path = cfg.get("dda_compras_path", default="") or ""
+        nao_cobrar = cfg.get("dda_cnpjs_ja_veio", default=[]) or []
+        abreviar = bool(cfg.get("dda_abreviar_fornecedor", default=True))
+        feriados = cfg.get("feriados_nacionais", default=[]) or []
 
         def trabalho():
+            from ..modules import dda_compras as DC
             from ..vendor.organizador_dda.excel.report_generator import (
                 ExcelReportGenerator)
-            ExcelReportGenerator(result, config_dda, metricas, rc).gerar(Path(saida))
-            return saida
+            # pendentes + programadas (amarelas), fornecedor abreviado
+            df_rel = DC.montar_df_relatorio(result.df, rc, abreviar=abreviar)
+            # "JÁ VEIO": planilha de Compras + CNPJs que não se cobra
+            notas, erro = [], ""
+            if compras_path:
+                try:
+                    notas = DC.ler_compras(Path(compras_path), DC.DiaUtil(feriados))
+                except Exception as exc:       # noqa: BLE001 — relatório sai mesmo assim
+                    erro = mensagem_erro_amigavel(exc)
+            else:
+                erro = "planilha de Compras não configurada"
+            resumo = DC.marcar_ja_veio(df_rel, notas, nao_cobrar)
+            resumo.erro = erro
+            ExcelReportGenerator(result, config_dda, metricas, rc,
+                                 df_relatorio=df_rel).gerar(Path(saida))
+            return saida, resumo
 
         self.runner.executar(trabalho, self._exportado, self._falhou)
 
-    def _exportado(self, saida: str) -> None:
+    def _exportado(self, carga) -> None:
+        saida, resumo = carga
         self._livre()
         rc = self.rc
         historico.registrar(
@@ -548,14 +641,26 @@ class DdaView(ctk.CTkFrame):
                 "linhas": self.result.total_processado,
                 "programados": rc.total_programado if rc else 0,
                 "pendentes": rc.total_pendente if rc else self.result.total_processado,
+                "ja_vieram_compras": resumo.total,
             },
             arquivos=[self.arquivo] + self.arquivos_banco, saida=saida)
         self.steps.set_ativo(4)
-        self.badge.set("relatório exportado", "ok")
         self.b_alt.pack_forget()          # não faz sentido "Exportar sem cruzar" aqui
         self._registrar_saida(saida)
-        self.app.toast.show("Relatório gerado. Use 'Abrir arquivo' para conferir.",
-                            "ok")
+        if resumo.erro:
+            self.badge.set("relatório exportado · sem Compras", "warn")
+            self.app.toast.show(
+                f"Relatório gerado, mas NÃO consegui ler a planilha de Compras "
+                f"({resumo.erro}). A coluna COMPRAS só tem os CNPJs da lista.",
+                "warn", ms=10000)
+        else:
+            conferir = (f", {resumo.por_nome_venc} por nome+venc (conferir)"
+                        if resumo.por_nome_venc else "")
+            self.badge.set(f"relatório exportado · {resumo.total} já vieram", "ok")
+            self.app.toast.show(
+                f"Relatório gerado. {resumo.total} nota(s) marcadas JÁ VEIO na "
+                f"Planilha1 ({resumo.por_nf_nome + resumo.por_nf_venc} pela NF"
+                f"{conferir}, {resumo.por_cnpj} pelo CNPJ).", "ok", ms=9000)
         self.app.atualizar_dashboard()
 
     def _consolidar(self) -> None:

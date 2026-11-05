@@ -159,6 +159,37 @@ DEFAULT: Dict[str, Any] = {
         "empresas": ["ALFAMETAL", "BETAVIARIA"],
         "ordenar_por_data": True,
     },
+
+    # ── Organizador DDA × Compras (29/10/2026) ──────────────────────────
+    # planilha que a automação do e-mail de Compras alimenta
+    "dda_compras_path": str(Path.home() / "OneDrive - ALFAMETAL" / "NOTAS - COMPRAS.xlsx"),
+    # raízes de CNPJ (8 díg.) que não se cobra de Compras → "JÁ VEIO"
+    "dda_cnpjs_ja_veio": [],
+    # termos de fornecedor que NÃO são retirados como usina
+    "dda_usinas_manter": ["SOLUCOES"],
+    "dda_abreviar_fornecedor": True,
+
+    # ── Conferir Compras (Outlook × planilha NOTAS - COMPRAS) ────────────
+    "conferir_compras": {
+        "conta": "contasapagar@alfametal.example",
+        "pasta": "COMPRAS",
+        "remetentes": ["compras1@alfametal.example", "compras4@alfametal.example"],
+        "empresas": ["ALFAMETAL", "BETAVIARIA"],
+        "dias": 30,
+        # a automação começou nesta data — e-mails anteriores não são cobrados
+        "inicio_automacao": "2026-09-28",
+    },
+
+    # ── Pensões (Excel do DP → CSV de importação) ───────────────────────
+    "pensoes": {
+        # planilha que tem a aba CADASTRO (matrícula → pensionista)
+        "cadastro_path": "",
+        # campos fixos da linha do CSV
+        "regt": "0", "empresa": "1", "observacao": "0", "tipo": "SAL",
+        "g_contas": "19", "transacao": "90540", "sufixo_titulo": "SAL",
+        # último valor digitado por pensão extra (sugestão no mês seguinte)
+        "ultimos_valores": {},
+    },
 }
 
 
@@ -333,6 +364,37 @@ class ConfigCentral:
             self._persistir_ui_pastas(pastas)       # disco: só esta chave
         except Exception:
             logger.warning("não consegui lembrar a última pasta", exc_info=True)
+
+    def persistir_chave(self, valor: Any, *chaves: str) -> None:
+        """Grava só UMA chave no JSON do disco (mesma cautela de lembrar_pasta:
+        não persiste edições pendentes da tela de Configurações)."""
+        disco: Dict[str, Any] = {}
+        if self.path.exists():
+            try:
+                lido = json.loads(self.path.read_text(encoding="utf-8"))
+            except Exception:
+                return              # JSON corrompido — não clobbera o arquivo
+            if not isinstance(lido, dict):
+                return
+            disco = lido
+        node = disco
+        for c in chaves[:-1]:
+            if not isinstance(node.get(c), dict):
+                node[c] = {}
+            node = node[c]
+        node[chaves[-1]] = valor
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=self.path.parent, suffix=".tmp.json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(disco, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, self.path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
     def _persistir_ui_pastas(self, pastas: Dict[str, str]) -> None:
         """Regrava só "ui_ultimas_pastas" no JSON do disco (atômico)."""

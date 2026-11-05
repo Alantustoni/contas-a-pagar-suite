@@ -30,6 +30,11 @@ MODULOS = {
     "remessa": "Remessa × Banco",
     "ret":     "Juntador RET",
     "usinas":  "Organizador Usinas",
+    "pensoes": "Pensões",
+    "conferir_compras": "Conferir Compras",
+    "importacao_usinas": "Importação Usinas",
+    "retorno": "Retorno (SISPAG)",
+    "filtrar_importacao": "Filtrar Importação (removido)",
 }
 
 
@@ -78,24 +83,6 @@ def resumo_hoje() -> Dict[str, Any]:
         "pendentes": total_pend,
         "inconsistencias": total_inc,
     }
-
-
-def contagem_por_modulo(dias: int = 7) -> Dict[str, int]:
-    """
-    Nº de execuções por módulo nos últimos `dias` — alimenta o
-    mini-gráfico de atividade do dashboard. Retorna sempre as 4 chaves
-    de MODULOS (na ordem), mesmo que zeradas.
-    """
-    from datetime import date, timedelta
-    limite = (date.today() - timedelta(days=dias - 1)).isoformat()
-    with _LOCK:
-        eventos = [e for e in _ler() if e.get("ts", "")[:10] >= limite]
-    contagem = {m: 0 for m in MODULOS}
-    for e in eventos:
-        m = e.get("modulo", "")
-        if m in contagem:
-            contagem[m] += 1
-    return contagem
 
 
 def pendencias_abertas() -> List[Dict[str, Any]]:
